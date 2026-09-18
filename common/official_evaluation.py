@@ -76,6 +76,8 @@ def build_official_evaluation(
     run_dir: Path,
     ref_score: dict[str, Any] | None,
     model_conformance_gate: bool,
+    solve_required: bool = False,
+    config_path: Path | None = None,
 ) -> EvaluationResult:
     """Assemble the authoritative evaluation from the parent evaluator's output.
 
@@ -92,6 +94,7 @@ def build_official_evaluation(
     layout_complete = bool(layout.get("complete", False))
     model_created = bool(backend.get("model_created", False))
     validation_passed = bool(backend.get("validation_passed", False))
+    solver_converged = bool(backend.get("solver_converged", False))
     reference_evaluated = bool(ref_score and ref_score.get("status") == "evaluated")
 
     systems: dict[str, float] = {}
@@ -108,7 +111,7 @@ def build_official_evaluation(
         construction = 0.0
         systems["model_conformance"] = 0.0
 
-    weights = load_weights()
+    weights = load_weights(config_path)
     active_weight = sum(weights.values()) or 1.0
     quality_score = 100.0 * sum(
         weights[name] * systems.get(name, 0.0) for name in weights
@@ -132,6 +135,8 @@ def build_official_evaluation(
         failure_reasons.append("construction_incorrect")
     if not validation_passed:
         failure_reasons.append("validation_failed")
+    if solve_required and not solver_converged:
+        failure_reasons.append("solver_not_converged")
     if not layout_complete:
         failure_reasons.append("artifacts_incomplete")
     if not reference_evaluated:
@@ -142,6 +147,7 @@ def build_official_evaluation(
         and compile_passed
         and model_created
         and validation_passed
+        and (not solve_required or solver_converged)
         and reference_evaluated
         and construction_ok
     )

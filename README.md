@@ -46,7 +46,8 @@ uv run python scripts/run_dataset.py `
 正式 test/reference 数据仍由父仓库提供；模型实际只挂载导出的 `train-all` 快照，
 不会直接挂载原始 `.agents/skills`。
 
-首次运行前可用 `uv run pytest -q` 验证环境。实验产生的 `runs/`、`reports/`、缓存和本地
+正式数据运行默认会执行 `engine.solve()` 并要求求解收敛；诊断时可使用
+`--no-solve-gate`。首次运行前可用 `uv run pytest -q` 验证环境。实验产生的 `runs/`、`reports/`、缓存和本地
 父仓库配置均被 Git 忽略；仓库只保存代码、配置模板、测试、脚本和无答案的训练快照。
 
 ## 三阶段自动运行

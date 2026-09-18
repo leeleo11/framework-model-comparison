@@ -750,7 +750,10 @@ def build_parser() -> argparse.ArgumentParser:
     # Official runs MUST execute PyOSIS; the flag only exists for diagnostics.
     parser.add_argument("--no-pyosis", action="store_true",
                         help="diagnostics only: skip PyOSIS execution and CLI scoring")
-    parser.add_argument("--solve-gate", action="store_true")
+    parser.add_argument(
+        "--solve-gate", action=argparse.BooleanOptionalAction, default=True,
+        help="run engine.solve() and require convergence (default: enabled; use --no-solve-gate for diagnostics)",
+    )
     parser.add_argument("--total-timeout-s", type=_positive_float, default=None)
     return parser
 
@@ -1126,7 +1129,9 @@ def main(argv: list[str] | None = None) -> int:
         if not compile_result.get("passed", False) or not backend.get("model_created", False):
             gate = False
         official = build_official_evaluation(
-            run_dir=run_dir_path, ref_score=ref_score, model_conformance_gate=gate
+            run_dir=run_dir_path, ref_score=ref_score, model_conformance_gate=gate,
+            solve_required=args.solve_gate,
+            config_path=Path(args.parent_repo) / "configs" / "evaluation.yaml",
         )
         overwrite_evaluation(run_dir_path, official)
         summary = replace(summary, evaluation=official)
@@ -1141,7 +1146,9 @@ def main(argv: list[str] | None = None) -> int:
         from common.official_evaluation import build_official_evaluation, overwrite_evaluation
 
         official = build_official_evaluation(
-            run_dir=Path(summary.run_dir), ref_score=None, model_conformance_gate=False
+            run_dir=Path(summary.run_dir), ref_score=None, model_conformance_gate=False,
+            solve_required=args.solve_gate,
+            config_path=Path(args.parent_repo) / "configs" / "evaluation.yaml",
         )
         overwrite_evaluation(Path(summary.run_dir), official)
         summary = replace(summary, evaluation=official)

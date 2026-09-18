@@ -102,13 +102,7 @@ _COMPARISON_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _eval_config_path(parent_repo: Path) -> Path:
-    """Prefer the comparison-local evaluation.yaml (fixed weights sum=1.0).
-
-    Falls back to the parent repo's config only if the local one is absent.
-    """
-    local = _COMPARISON_ROOT / "configs" / "evaluation.yaml"
-    if local.is_file():
-        return local
+    """Use the parent repository's evaluator configuration as the authority."""
     return Path(parent_repo) / "configs" / "evaluation.yaml"
 
 
