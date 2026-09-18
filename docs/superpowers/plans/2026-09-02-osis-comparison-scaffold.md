@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- Never modify \`E:\\实习\\osis-skill-enhance-main\`; its current worktree is dirty.
-- Read \`E:\\实习\\osis-skill-enhance-main\\.agents\\skills\` through a read-only SkillAdapter.
+- Never modify the local OSIS parent repository; its worktree may contain unrelated changes.
+- Read the parent repository's \.agents/skills through a read-only SkillAdapter.
 - Reject path traversal for skills, references, scripts, task files, and run directories.
 - A run is not successful unless the real model backend, solver, and validator explicitly report success.
 - T1 is one-shot and cannot use interactive skill reads; T2–T6 may use progressive skill tools.
@@ -123,7 +123,7 @@
 ## Task 6: Verification
 
 - [ ] Run \`pytest -q\`.
-- [ ] Run the conformance CLI against \`E:\\实习\\osis-skill-enhance-main\\.agents\\skills\`.
+- [ ] Run the conformance CLI against the configured parent repository's \.agents/skills.
 - [ ] Verify generated run manifests and artifact hashes.
 - [ ] Run the DOCX validator on the preserved design document.
 - [ ] Report that the scaffold is ready for real executor integration, not that modeling experiments have already completed.
