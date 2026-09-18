@@ -1,9 +1,8 @@
 """Where the OSIS skill repository (the "parent repo") lives.
 
 This framework is designed to sit BESIDE ``osis-skill-enhance-main``, not
-inside it.  ``对比实验框架设计文档.md`` names two sibling absolute paths
-(实验目录 / 被测项目), and the scaffold plan states the constraint outright:
-"Keep the experiment project independent from ``osis-skill-enhance-main``".
+inside it.  The experiment design requires the comparison repository and the
+parent repository to remain independent sibling directories.
 
 Because the two directories are siblings, there is no reliable directory
 arithmetic that can find the parent repo from this file's position.  The
