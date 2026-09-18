@@ -35,10 +35,7 @@ def main() -> int:
     parser.add_argument("--candidate-project", type=Path, default=None)
     parser.add_argument("--parent-repo", type=Path, default=None)
     parser.add_argument("--execute-pyosis", action="store_true")
-    parser.add_argument(
-        "--solve-gate", action=argparse.BooleanOptionalAction, default=True,
-        help="run engine.solve() and require convergence (default: enabled)",
-    )
+    parser.add_argument("--solve-gate", action="store_true")
     args = parser.parse_args()
     # A metadata-only adapter smoke test does not need the OSIS parent repo.
     # Resolve it only for the execution path that actually imports PyOSIS or

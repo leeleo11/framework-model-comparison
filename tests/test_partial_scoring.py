@@ -30,9 +30,14 @@ from scripts.run_dataset import (
 )
 
 
-def test_long_formal_timeout_gives_generation_an_hour_and_keeps_postprocess_reserve():
-    assert FROZEN_GENERATION_STEP_TIMEOUT_S == 3600.0
-    assert _effective_generation_timeout_s(5400.0) == 3600.0
+def test_formal_timeout_matches_the_parent_repo_generation_budget():
+    # The generation cap is the parent repo's own bridge-building limit
+    # (opencode_client.DEFAULT_TIMEOUT = 6000s, mirrored by train/runner.py and
+    # dashboard/jobs.py), so no architecture is truncated below what the native
+    # OSIS-AI toolchain grants itself.
+    assert FROZEN_GENERATION_STEP_TIMEOUT_S == 6000.0
+    assert _effective_generation_timeout_s(7800.0) == 6000.0
+    # An explicitly shorter run still keeps the post-processing reserve.
     assert _effective_generation_timeout_s(3600.0) == 1800.0
 
 

@@ -49,6 +49,9 @@ def build_command(args: argparse.Namespace, architecture: str) -> list[str]:
         "--index", str(args.index),
         "--seed", str(args.seed),
         "--runs-dir", str(args.runs_dir),
+        # Formal runs must include the PyOSIS solve gate.  ``--no-pyosis``
+        # remains an explicit diagnostics-only escape hatch in run_dataset.
+        "--solve-gate",
     ]
     # Without this the child falls back to its own resolver, and a campaign
     # must read the same parent repo the campaign was launched against.

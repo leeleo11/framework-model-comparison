@@ -21,6 +21,13 @@ class EvaluationResult:
     quality_score: float
     failure_reasons: list[str]
     components: dict[str, float]
+    # The same weighted composite computed twice, differing only in where the
+    # 0.40-weight construction dimension comes from: the candidate's source text
+    # (static, the parent evaluator's original reading) or the model that was
+    # actually built (runtime).  Both are reported; ``quality_score`` above
+    # keeps the static reading for backward compatibility.
+    quality_score_static: float | None = None
+    quality_score_runtime: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

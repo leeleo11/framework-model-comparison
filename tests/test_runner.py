@@ -7,11 +7,11 @@ from common.task_schema import TaskSpec
 from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 
 
-def test_runner_default_timeout_matches_formal_one_hour_baseline(tmp_path: Path):
+def test_runner_default_timeout_matches_formal_baseline(tmp_path: Path):
     skills = tmp_path / "skills"
     skills.mkdir()
     runner = ExperimentRunner(skills_dir=skills, runs_dir=tmp_path / "runs")
-    assert runner.timeout_s == 5400
+    assert runner.timeout_s == 7800
 
 
 def _write_canonical_project(root: Path) -> None:

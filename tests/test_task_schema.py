@@ -18,7 +18,7 @@ def test_task_spec_accepts_modeling_task():
     assert task.task_id == "cantilever_whole_l1_01"
     assert task.task_form == "whole"
     assert task.initial_project_snapshot is None
-    assert task.total_timeout_s == 5400
+    assert task.total_timeout_s == 7800
     assert task.subtask_timeout_s["P4"] == 1200
 
 

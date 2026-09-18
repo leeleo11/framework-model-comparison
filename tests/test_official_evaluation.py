@@ -100,3 +100,48 @@ def test_overwrite_writes_evaluation_json(tmp_path: Path):
     written = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
     assert written["quality_score"] == eval_result.quality_score
     assert written["complete_success"] is True
+
+
+def test_runtime_measurement_score_is_not_part_of_official_score(tmp_path: Path):
+    _write_run(tmp_path)
+    (tmp_path / "runtime_score.json").write_text(
+        json.dumps({"status": "evaluated", "candidate_score": 0.01}),
+        encoding="utf-8",
+    )
+    systems = {k: 0.5 for k in (
+        "generic_text", "osis_text", "python_syntax",
+        "model_conformance", "efficiency", "cost",
+    )}
+    result = build_official_evaluation(
+        run_dir=tmp_path,
+        ref_score=_ref_score(systems),
+        model_conformance_gate=True,
+    )
+    assert result.quality_score_runtime is None
+    assert "dim_model_conformance_runtime" not in result.components
+
+
+def test_requested_solve_failure_zeroes_official_score(tmp_path: Path):
+    _write_run(tmp_path)
+    (tmp_path / "backend_status.json").write_text(
+        json.dumps({
+            "model_created": True,
+            "validation_passed": True,
+            "solve_requested": True,
+            "solve_status": "failed",
+            "solver_converged": False,
+        }),
+        encoding="utf-8",
+    )
+    systems = {k: 1.0 for k in (
+        "generic_text", "osis_text", "python_syntax",
+        "model_conformance", "efficiency", "cost",
+    )}
+    result = build_official_evaluation(
+        run_dir=tmp_path,
+        ref_score=_ref_score(systems),
+        model_conformance_gate=True,
+    )
+    assert result.quality_score == 0.0
+    assert result.complete_success is False
+    assert "solver_not_converged" in result.failure_reasons

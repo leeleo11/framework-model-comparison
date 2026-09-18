@@ -76,8 +76,6 @@ def build_official_evaluation(
     run_dir: Path,
     ref_score: dict[str, Any] | None,
     model_conformance_gate: bool,
-    solve_required: bool = False,
-    config_path: Path | None = None,
 ) -> EvaluationResult:
     """Assemble the authoritative evaluation from the parent evaluator's output.
 
@@ -94,7 +92,9 @@ def build_official_evaluation(
     layout_complete = bool(layout.get("complete", False))
     model_created = bool(backend.get("model_created", False))
     validation_passed = bool(backend.get("validation_passed", False))
+    solve_requested = bool(backend.get("solve_requested", False))
     solver_converged = bool(backend.get("solver_converged", False))
+    solve_ok = (not solve_requested) or solver_converged
     reference_evaluated = bool(ref_score and ref_score.get("status") == "evaluated")
 
     systems: dict[str, float] = {}
@@ -106,17 +106,33 @@ def build_official_evaluation(
     for name in DEFAULT_WEIGHTS:
         systems.setdefault(name, 0.0)
 
-    construction = systems["model_conformance"]
+    # The construction dimension comes from the parent evaluator's original
+    # source reading.  Runtime model measurements are deliberately not part of
+    # the official score; they may remain as diagnostic sidecars.
+    construction_static = systems["model_conformance"]
     if not model_conformance_gate:
-        construction = 0.0
-        systems["model_conformance"] = 0.0
+        construction_static = 0.0
 
-    weights = load_weights(config_path)
+    weights = load_weights()
     active_weight = sum(weights.values()) or 1.0
-    quality_score = 100.0 * sum(
-        weights[name] * systems.get(name, 0.0) for name in weights
-    ) / active_weight
 
+    def _composite(construction: float) -> float:
+        """Weighted composite with the construction dimension substituted."""
+
+        merged = {**systems, "model_conformance": construction}
+        return 100.0 * sum(
+            weights[name] * merged.get(name, 0.0) for name in weights
+        ) / active_weight
+
+    quality_score = _composite(construction_static)
+    if solve_requested and not solve_ok:
+        # Solve is a hard gate, not an extra weighted dimension.  Preserve
+        # the parent-evaluator components for diagnosis, but the official
+        # total is zero when a requested solve did not converge.
+        quality_score = 0.0
+    systems["model_conformance"] = construction_static
+
+    construction = construction_static
     construction_ok = construction >= 0.8
     components = {
         **{f"dim_{name}": systems[name] for name in DEFAULT_WEIGHTS},
@@ -124,6 +140,8 @@ def build_official_evaluation(
         "model_created": 1.0 if model_created else 0.0,
         "validation_passed": 1.0 if validation_passed else 0.0,
         "layout_complete": 1.0 if layout_complete else 0.0,
+        "solve_requested": 1.0 if solve_requested else 0.0,
+        "solver_converged": 1.0 if solver_converged else 0.0,
     }
 
     failure_reasons: list[str] = []
@@ -135,7 +153,7 @@ def build_official_evaluation(
         failure_reasons.append("construction_incorrect")
     if not validation_passed:
         failure_reasons.append("validation_failed")
-    if solve_required and not solver_converged:
+    if solve_requested and not solve_ok:
         failure_reasons.append("solver_not_converged")
     if not layout_complete:
         failure_reasons.append("artifacts_incomplete")
@@ -147,15 +165,17 @@ def build_official_evaluation(
         and compile_passed
         and model_created
         and validation_passed
-        and (not solve_required or solver_converged)
         and reference_evaluated
         and construction_ok
+        and solve_ok
     )
     return EvaluationResult(
         complete_success=complete_success,
         quality_score=round(quality_score, 4),
         failure_reasons=failure_reasons,
         components=components,
+        quality_score_static=round(quality_score, 4),
+        quality_score_runtime=None,
     )
 
 

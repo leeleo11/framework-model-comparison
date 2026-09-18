@@ -19,7 +19,7 @@ T1–T5 的区别只在编排框架，T6 使用 OSIS 原生编排。任务、技
 
 ## 环境要求
 
-- Windows、macOS 或 Linux；
+- Windows（正式 T1–T6 运行依赖 Windows 的 OSIS/PyOSIS/OpenCode 进程接口）；
 - Python 3.12 或更高版本，推荐 Python 3.13；
 - [`uv`](https://docs.astral.sh/uv/)；
 - OSIS 父仓库 `osis-skill-enhance-main`；
@@ -245,3 +245,4 @@ T6 相关测试还需要 OpenCode agent instructions 和父仓库工具链；没
 **只有 `model_score.json` 没有 `reference_score.json`**：通常表示没有找到 `scorer_private/reference_project`，或父仓库评分环境不可用；该运行不能作为正式六维综合分纳入表格。
 
 **想关闭求解**：仅用于诊断，使用 `--no-solve-gate`，不要把这类结果与正式开启求解的结果混合比较。
+

@@ -16,12 +16,59 @@ import argparse
 import html
 import json
 import re
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARCHS = ("T1", "T2", "T3", "T4", "T5", "T6")
+# How long the whole watched tree may stay write-free before "running" cells are
+# even considered for the abandoned verdict.  Write-freeness alone is only a
+# first filter, never the verdict: a run blocked inside one long model call
+# writes nothing for 30-60 minutes while being perfectly alive.
+STALL_AFTER_S = 600.0
+# How often the (relatively costly) process probe may run.  Between probes the
+# previous answer is reused, so the 8-second refresh never re-shells out.
+PROC_RECHECK_S = 60.0
+_PROC_CACHE: dict[str, float | bool | None] = {"ts": 0.0, "alive": None}
+
+
+def _experiment_process_alive() -> bool | None:
+    """Whether any experiment process is running, or ``None`` if unknowable.
+
+    This is the authoritative "is anything actually running" signal; file
+    mtimes are not, because a blocked run is silent for long stretches.
+    ``None`` means the probe itself failed -- callers must then make no claim
+    rather than guess.
+    """
+
+    now = time.monotonic()
+    cached = _PROC_CACHE["alive"]
+    if cached is not None and now - float(_PROC_CACHE["ts"]) < PROC_RECHECK_S:
+        return bool(cached)
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "$_.CommandLine -like '*run_dataset*' -or $_.CommandLine -like '*run_selected*' "
+        "-or $_.CommandLine -like '*run_campaign*' -or $_.CommandLine -like '*run_all_parallel*' "
+        "-or $_.CommandLine -like '*_smolagents*' -or $_.CommandLine -like '*_langgraph*' "
+        "-or $_.CommandLine -like '*_openhands*' -or $_.CommandLine -like '*_crewai*' "
+        "-or $_.CommandLine -like '*t6_osisai*' -or $_.CommandLine -like '*opencode.exe serve*' "
+        "} | Measure-Object | Select-Object -ExpandProperty Count"
+    )
+    alive: bool | None
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=25,
+        )
+        text = (proc.stdout or "").strip()
+        alive = int(text) > 0 if text.isdigit() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        alive = None
+    _PROC_CACHE["ts"] = now
+    _PROC_CACHE["alive"] = alive
+    return alive
 RUN_RE = re.compile(
     r"^(?P<bridge>.+)__(?P<form>full|gen|edit)__(?P<index>\d+)__"
     r"(?P<architecture>T[1-6])__seed(?P<seed>\d+)$"
@@ -107,6 +154,12 @@ def _run_row(campaign_root: Path, path: Path) -> dict | None:
         "compiled": compile_result.get("passed"),
         "layout": layout.get("complete"),
         "score": score,
+        # The two framework composites, identical except for where the
+        # 0.40-weight construction dimension comes from: the candidate's source
+        # text (static) or the model that was actually built (runtime).  Runs
+        # scored before the second reading existed show "—" until rescored.
+        "quality_static": ev.get("quality_score_static", ev.get("quality_score")),
+        "quality_runtime": ev.get("quality_score_runtime"),
         "last_write": _latest_mtime(path),
         "run_dir": str(path),
     }
@@ -132,16 +185,26 @@ def _blocked_rows(campaign_root: Path) -> list[dict]:
             "complete": False,
             "reasons": [reason[:160]],
             "score": None,
+            "quality_static": None,
+            "quality_runtime": None,
             "last_write": path.stat().st_mtime,
             "run_dir": str(path),
         })
     return result
 
 
-def scan_roots(run_roots: list[Path], expected: dict | None = None) -> dict:
-    """Aggregate all recognized run directories under one or more roots."""
+def scan_roots(run_roots: list[Path], expected: dict | None = None, *,
+               process_probe: object | None = None) -> dict:
+    """Aggregate all recognized run directories under one or more roots.
+
+    ``process_probe`` is called as ``probe()`` and must return True (something
+    is running), False (nothing is), or None (unknown).  Pass ``None`` to skip
+    the probe entirely, which is what the tests do -- the probe shells out to
+    the OS and has no place in a pure scan.
+    """
 
     rows: list[dict] = []
+    newest_overall = 0.0
     for root in run_roots:
         if not root.is_dir():
             continue
@@ -151,6 +214,27 @@ def scan_roots(run_roots: list[Path], expected: dict | None = None) -> dict:
                 row = _run_row(root, path)
                 if row is not None:
                     rows.append(row)
+                    if row["last_write"]:
+                        newest_overall = max(newest_overall, row["last_write"])
+
+    # A run whose driver died keeps ``timer.json`` saying "running" forever, so
+    # the per-run state alone cannot tell "working" from "abandoned".  Two
+    # signals are needed, because either one alone misleads:
+    #
+    #   * the whole tree being write-free for a while  -- cheap, but a single
+    #     live run blocked inside one long model call is also write-free;
+    #   * no experiment process running at all         -- authoritative, but
+    #     costs a subprocess call.
+    #
+    # So: the quiet check screens, the process probe decides, and a probe that
+    # fails to answer means no claim is made.
+    quiet_s = (time.time() - newest_overall) if newest_overall else 0.0
+    if newest_overall and quiet_s > STALL_AFTER_S:
+        alive = process_probe() if callable(process_probe) else None
+        if alive is False:
+            for row in rows:
+                if row["state"] in ("running", "starting"):
+                    row["state"] = "stalled"
 
     rows.sort(key=lambda row: (
         row["campaign"], row["bridge"], row["form"], row["index"],
@@ -181,14 +265,24 @@ def scan_roots(run_roots: list[Path], expected: dict | None = None) -> dict:
             if numeric_values:
                 expected_total = sum(numeric_values)
     observed = len(rows)
+    # Cells the matrix expects but that have no run directory at all.  Counting
+    # existing directories alone made the board say "排队 0 · 完成 N/N" while
+    # whole architecture columns were quietly missing -- it looked finished when
+    # it was not.  An explicitly declared total still wins when given, so a
+    # caller that knows its own campaign size can override the inference.
+    empty_cells = sum(len(ARCHS) - len(group["cells"]) for group in groups.values())
     done = sum(row["state"] == "done" for row in rows)
-    running = sum(row["state"] in {"running", "starting"} for row in rows)
+    running = sum(row["state"] in {"running", "starting", "stalled"} for row in rows)
     blocked = sum(row["state"] == "blocked" for row in rows)
     failed = sum(row["state"] == "done" and not row["complete"] for row in rows)
-    total = max(observed, expected_total or 0)
+    if expected_total is not None:
+        total = max(observed, expected_total)
+    else:
+        total = observed + empty_cells
     summary = {
         "total": total,
         "observed_runs": observed,
+        "empty_cells": empty_cells,
         "done": done,
         "running": running,
         "blocked": blocked,
@@ -218,11 +312,25 @@ def _cell(row: dict | None) -> str:
     if row["state"] in {"running", "starting"}:
         age = max(0, int(time.time() - row["last_write"])) if row["last_write"] else 0
         return f'<td class="running" title="{title}">⟳<br><span>{age}s</span></td>'
-    score = row["quality"]
-    score_text = f"{score:.1f}" if isinstance(score, (int, float)) else "—"
+    if row["state"] == "stalled":
+        # The directory says "running" but nothing in the whole tree is being
+        # written, so the driver is gone.  Showing this honestly matters: a
+        # ghost cell looks like an in-flight experiment that will never finish.
+        age = max(0, int(time.time() - row["last_write"])) if row["last_write"] else 0
+        return f'<td class="stalled" title="{title}">停摆<br><span>{age//60}min</span></td>'
+    static = row["quality_static"]
+    runtime = row["quality_runtime"]
+
+    def _fmt(value: object) -> str:
+        # Both composites are already 0-100.
+        return f"{value:.1f}" if isinstance(value, (int, float)) else "—"
+
     cls = "success" if row["complete"] else "failed"
     mark = "✅" if row["complete"] else "❌"
-    return f'<td class="{cls}" title="{title}">{mark}<br><span>{score_text}</span></td>'
+    return (
+        f'<td class="{cls}" title="{title}">{mark}<br>'
+        f'<span>{_fmt(static)} | {_fmt(runtime)}</span></td>'
+    )
 
 
 def render(data: dict, title: str) -> str:
@@ -261,6 +369,7 @@ table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #232833;pad
 th{{background:#161a22;font-weight:600}} td.task{{text-align:left;color:#9ca3af;font-size:11px}}
 td.success{{background:#14401a}} td.failed{{background:#3a1616}} td.running{{background:#14243a}}
 td.queue{{background:#25252a;color:#8b93a1}} td.blocked{{background:#2a1a33;color:#c084fc}}
+td.stalled{{background:#3a2a12;color:#d0a060}}
 td.empty{{padding:24px;color:#8b93a1}} td span{{font-size:11px;color:#c0c5ce}}
 .legend{{margin-top:14px;color:#8b93a1;font-size:12px}}
 </style></head><body>
@@ -278,7 +387,7 @@ td.empty{{padding:24px;color:#8b93a1}} td span{{font-size:11px;color:#c0c5ce}}
 <table><tr><th>批次</th><th>任务</th><th>桥型</th><th>形式</th><th>索引</th>{head}</tr>
 {"".join(body)}
 </table>
-<div class="legend">✅ 完整成功　❌ 已结束但未达标　⟳ 运行中　待排 尚未创建运行目录　门禁 泄漏门禁拦截　数字为源码 quality 分</div>
+<div class="legend">✅ 完整成功　❌ 已结束但未达标　⟳ 运行中　停摆 目录仍在但整棵实验树已静默（driver 已死）　待排 尚未创建运行目录　门禁 泄漏门禁拦截　数字为框架综合分「构造维度取静态源码 | 构造维度取实际建模模型」，均为 0–100</div>
 </body></html>"""
 
 
@@ -291,6 +400,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="optional JSON object with a total task count")
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument(
+        "--output", type=Path, default=None,
+        help="HTML output path; defaults to tmp/progress-<name>.html",
+    )
     args = parser.parse_args(argv)
 
     if args.runs_root:
@@ -299,19 +412,29 @@ def main(argv: list[str] | None = None) -> int:
             for path in args.runs_root
         ]
         title = "统一实验"
-        out = PROJECT_ROOT / "tmp" / "progress-unified.html"
+        # Name the board after the roots it watches.  A single fixed filename
+        # let two boards watching different campaigns overwrite each other, so
+        # a stale board could silently blank a live one.
+        slug = "-".join(path.name for path in roots) or "unified"
+        default_out = PROJECT_ROOT / "tmp" / f"progress-{slug}.html"
     elif args.label:
         roots = [PROJECT_ROOT / "runs" / args.label]
         title = args.label
-        out = PROJECT_ROOT / "tmp" / f"progress-{args.label}.html"
+        default_out = PROJECT_ROOT / "tmp" / f"progress-{args.label}.html"
     else:
         parser.error("必须提供 --label 或至少一个 --runs-root")
+
+    if args.output is not None:
+        out = args.output if args.output.is_absolute() else PROJECT_ROOT / args.output
+    else:
+        out = default_out
 
     expected = _read_json(args.expected_json) if args.expected_json else None
     out.parent.mkdir(parents=True, exist_ok=True)
     while True:
         try:
-            data = scan_roots(roots, expected=expected)
+            data = scan_roots(roots, expected=expected,
+                              process_probe=_experiment_process_alive)
             out.write_text(render(data, title), encoding="utf-8")
             print(
                 f'[{data["ts"]}] 总任务 {data["summary"]["total"]} · '

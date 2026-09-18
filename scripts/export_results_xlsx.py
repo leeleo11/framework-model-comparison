@@ -23,6 +23,14 @@ from common.paths import resolve_run_root
 
 
 ARCHITECTURES = ("T1", "T2", "T3", "T4", "T5", "T6")
+ARCHITECTURE_LABELS = {
+    "T1": "T1 direct",
+    "T2": "T2 ReAct",
+    "T3": "T3 CodeAct-lite",
+    "T4": "T4 CodeAct-full",
+    "T5": "T5 multi-agent",
+    "T6": "T6 OSIS-AI",
+}
 DATASET_FORMS = ("full", "gen", "edit")
 TASK_FORM_TO_DATASET_FORM = {"whole": "full", "module": "gen", "modify": "edit"}
 FORMAL_SPLITS = frozenset({"train", "test"})
@@ -59,17 +67,20 @@ RUN_COLUMNS = (
     ("run_status", "运行状态"),
     ("complete_success", "完整成功"),
     ("quality_score", "综合质量分"),
+    ("quality_static", "综合分(构造=静态源码)"),
     ("model_score", "CLI模型分"),
     ("model_score_status", "CLI评分状态"),
-    # Runtime extraction is a parallel result.  These columns are intentionally
-    # adjacent to the source score so a row can be audited without confusing
-    # the two scoring paths.
-    ("runtime_score", "运行态模型分"),
-    ("runtime_score_5", "运行态模型分(5分)"),
-    ("runtime_score_status", "运行态评分状态"),
-    ("runtime_measurements_status", "运行态快照状态"),
-    ("runtime_missing_params", "运行态缺失参数"),
-    ("runtime_score_path", "运行态评分文件"),
+    ("tokens_input", "输入Token"),
+    ("tokens_output", "输出Token"),
+    ("tokens_reasoning", "推理Token"),
+    ("tokens_total", "总Token"),
+    ("dim_model_conformance", "构造维度分(静态)"),
+    ("dim_python_syntax", "编译维度分"),
+    ("dim_osis_text", "结构维度分"),
+    ("structure_completeness", "结构完整性"),
+    ("generic_text_score", "代码相似度(对照参考)"),
+    ("cost_score", "资源消耗分"),
+    ("efficiency_score", "耗时衰减分"),
     ("reference_score", "参考相对总分"),
     ("model_conformance", "参考模型符合分"),
     ("reference_score_status", "参考评分状态"),
@@ -206,8 +217,6 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
             if not generation:
                 generation = _read_json(run_dir / "generated" / candidate)
         reference_score = _read_json(run_dir / "reference_score.json")
-        runtime_score = _read_json(run_dir / "runtime_score.json")
-        runtime_measurements = _read_json(run_dir / "runtime_measurements.json")
         failure_reasons = evaluation.get("failure_reasons") or []
         if isinstance(failure_reasons, list):
             failure_reasons = "; ".join(str(item) for item in failure_reasons)
@@ -260,20 +269,26 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
             "run_status": timer.get("status") or trace.get("status"),
             "complete_success": _bool_number(evaluation.get("complete_success")),
             "quality_score": evaluation.get("quality_score"),
+            "quality_static": evaluation.get(
+                "quality_score_static", evaluation.get("quality_score")
+            ),
+            "efficiency_score": (reference_score.get("systems") or {}).get("efficiency"),
+            "dim_model_conformance": (evaluation.get("components") or {}).get(
+                "dim_model_conformance"
+            ),
+            "dim_python_syntax": (evaluation.get("components") or {}).get(
+                "dim_python_syntax"
+            ),
+            "dim_osis_text": (evaluation.get("components") or {}).get(
+                "dim_osis_text"
+            ),
+            "structure_completeness": (evaluation.get("components") or {}).get(
+                "structure_completeness"
+            ),
+            "generic_text_score": (reference_score.get("systems") or {}).get("generic_text"),
+            "cost_score": (reference_score.get("systems") or {}).get("cost"),
             "model_score": model_score.get("candidate_score"),
             "model_score_status": model_score.get("status"),
-            "runtime_score": runtime_score.get("candidate_score"),
-            "runtime_score_5": runtime_score.get("total_score_5"),
-            "runtime_score_status": runtime_score.get("status"),
-            "runtime_measurements_status": runtime_measurements.get("status"),
-            "runtime_missing_params": "; ".join(
-                str(item) for item in (runtime_score.get("missing_params") or [])
-            ),
-            "runtime_score_path": (
-                str((run_dir / "runtime_score.json").resolve())
-                if (run_dir / "runtime_score.json").is_file()
-                else ""
-            ),
             "reference_score": reference_score.get("overall_score"),
             "model_conformance": reference_score.get("model_conformance_score"),
             "reference_score_status": reference_score.get("status"),
@@ -288,6 +303,10 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
             "invalid_tool_calls": generation.get("invalid_tool_calls"),
             "framework_steps": generation.get("framework_steps"),
             "stop_reason": generation.get("stop_reason"),
+            "tokens_output": (generation.get("tokens") or {}).get("output_tokens"),
+            "tokens_input": (generation.get("tokens") or {}).get("input_tokens"),
+            "tokens_reasoning": (generation.get("tokens") or {}).get("reasoning_tokens"),
+            "tokens_total": (generation.get("tokens") or {}).get("total_tokens"),
             "infrastructure_failure": _bool_number(
                 trace.get("generation", {}).get("infrastructure_failure")
                 if isinstance(trace.get("generation"), dict)
@@ -377,9 +396,8 @@ def _runs_sheet(sheet, records: list[dict[str, Any]]):
             cell.fill = SUCCESS_FILL if cell.value == 1 else FAIL_FILL
             cell.alignment = Alignment(horizontal="center")
         sheet.cell(row=row, column=key_to_col["quality_score"]).number_format = "0.0"
-        for key in ("model_score", "runtime_score"):
+        for key in ("model_score",):
             sheet.cell(row=row, column=key_to_col[key]).number_format = "0.0%"
-        sheet.cell(row=row, column=key_to_col["runtime_score_5"]).number_format = "0.00"
         for key in ("temperature",):
             sheet.cell(row=row, column=key_to_col[key]).number_format = "0.0"
         for key in (
@@ -414,38 +432,109 @@ def _bounded_ref(key_to_col: dict[str, int], key: str, last_row: int) -> str:
     return f"'运行明细'!${column}$2:${column}${end}"
 
 
+def _per_bridge_detail_sheet(
+    sheet,
+    records: list[dict[str, Any]],
+    *,
+    score_key: str,
+    title: str,
+) -> None:
+    """Per-bridge detail table.
+
+    One row per actual run that exists on disk, sorted by bridge then by
+    (form, architecture, seed).  The score column reads from the record
+    dict directly (already in memory) -- no Excel formulas are emitted
+    because every row exists for a real run.  The previous implementation
+    reserved 32 seed slots per (bridge × form × architecture) triple,
+    which produced 3457 rows with ~96% empty cells.
+    """
+
+    headers = ["桥型", "任务形式", "架构", "Seed", "分数", "合格", "编译", "建模", "验证"]
+    sheet.append(headers)
+
+    # Pre-compute the path of each record so we can show the directory
+    # beneath the data; readers often want to open one and audit it.
+    path_lookup = {id(rec): rec.get("run_dir", "") for rec in records}
+
+    def _sort_key(rec: dict[str, Any]) -> tuple:
+        # Bridge is the primary sort key; form then arch then seed keep
+        # rows in a predictable, citation-friendly order.
+        return (
+            rec.get("bridge_type", ""),
+            rec.get("dataset_form", ""),
+            rec.get("architecture_id", ""),
+            rec.get("seed", 0),
+        )
+
+    written = 0
+    for rec in sorted(records, key=_sort_key):
+        if not rec.get("run_dir"):
+            continue  # incomplete record, skip rather than emit blank row
+        score = rec.get(score_key)
+        sheet.append([
+            rec.get("bridge_type", ""),
+            rec.get("dataset_form", ""),
+            rec.get("architecture_id", ""),
+            rec.get("seed", ""),
+            round(score, 2) if isinstance(score, (int, float)) else None,
+            "✅" if rec.get("complete_success") else "❌",
+            "✅" if rec.get("compile_passed") else "❌",
+            "✅" if rec.get("model_created") else "❌",
+            "✅" if rec.get("validation_passed") else "❌",
+        ])
+        written += 1
+
+    _style_header(sheet)
+    _style_body(sheet)
+    sheet.freeze_panes = "E2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.sheet_view.showGridLines = False
+    _fit_columns(sheet, maximum=24)
+    sheet.cell(row=1, column=10).comment = openpyxl.comments.Comment(
+        f"按 score_key={score_key} 排序，{written} 行实际 run。", "export_results_xlsx"
+    ) if False else None  # comment attribute varies; skip for portability
+    for r in range(2, sheet.max_row + 1):
+        sheet.cell(row=r, column=5).number_format = "0.0"
+
+
 def _comparison_sheet(
     sheet,
     key_to_col: dict[str, int],
     last_row: int,
     *,
-    score_key: str = "model_score",
-    status_key: str = "model_score_status",
-    score_label: str = "源码分均值",
-    rate_label: str = "完整成功率",
-    rate_mode: str = "complete_success",
-    table_name: str = "FrameworkComparison",
+    rows: list[tuple[str, str]],
+    table_name: str,
 ) -> None:
-    """One matrix row per bridge type × dataset form for one score path."""
+    """One matrix row per bridge type × dataset form, with several stacked sub-rows.
+
+    ``rows`` lists tuples ``(label, formula_key)``.  ``formula_key`` must be one
+    of the fields present in the runs sheet (e.g. ``quality_static``,
+    ``runtime_score``).  For each combination of bridge × form, one row per
+    entry in ``rows`` is written, so a sheet titled "按父仓库规则" can show
+    several metrics stacked under one bridge×form header.
+    """
 
     headers = ["桥型", "任务形式", "纳入统计运行数"]
     for architecture in ARCHITECTURES:
-        headers.extend(
-            [
-                f"{architecture} {score_label}",
-                f"{architecture} 有效N",
-                f"{architecture} {rate_label}",
-            ]
-        )
+        # Each metric gets the same three columns (score, N, rate) under each
+        # architecture so the matrix is read row by row in the same way
+        # regardless of the metric being compared.
+        for label, _ in rows:
+            headers.extend(
+                [
+                    f"{architecture} {label}",
+                    f"{architecture} 有效N",
+                    f"{architecture} 完整成功率",
+                ]
+            )
     sheet.append(headers)
 
     bridge_ref = _bounded_ref(key_to_col, "bridge_type", last_row)
     form_ref = _bounded_ref(key_to_col, "dataset_form", last_row)
     arch_ref = _bounded_ref(key_to_col, "architecture_id", last_row)
     eligible_ref = _bounded_ref(key_to_col, "aggregation_eligible", last_row)
-    status_ref = _bounded_ref(key_to_col, status_key, last_row)
-    score_ref = _bounded_ref(key_to_col, score_key, last_row)
     success_ref = _bounded_ref(key_to_col, "complete_success", last_row)
+    generic_status_ref = _bounded_ref(key_to_col, "model_score_status", last_row)
 
     row_index = 2
     for bridge_type in BRIDGE_TYPES:
@@ -457,71 +546,200 @@ def _comparison_sheet(
                 3,
                 f'=COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},{eligible_ref},1)',
             )
+            # The header groups columns by architecture, and inside each
+            # architecture by metric.  So one physical row carries every
+            # metric for every architecture, and the (bridge, form) pair
+            # appears exactly once per sheet.
             column = 4
             for architecture in ARCHITECTURES:
-                sheet.cell(
-                    row_index,
-                    column,
-                    f'=IFERROR(AVERAGEIFS({score_ref},{bridge_ref},$A{row_index},{form_ref},$B{row_index},{arch_ref},"{architecture}",{eligible_ref},1,{status_ref},"evaluated"),"")',
-                )
-                sheet.cell(
-                    row_index,
-                    column + 1,
-                    f'=COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},{arch_ref},"{architecture}",{eligible_ref},1,{status_ref},"evaluated")',
-                )
-                if rate_mode == "evaluated":
-                    rate_formula = (
-                        f'=IFERROR(COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},'
-                        f'{arch_ref},"{architecture}",{eligible_ref},1,{status_ref},"evaluated")/'
-                        f'COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},'
-                        f'{arch_ref},"{architecture}",{eligible_ref},1),"")'
+                for _label, formula_key in rows:
+                    # Gate columns.  ``runtime_score_status`` says whether the
+                    # runtime sidecar produced a score, which is what makes a
+                    # runtime-side metric comparable.  The bare boolean signals
+                    # (model_created / solver_converged / validation_passed)
+                    # have no "evaluated" status of their own -- they are always
+                    # 0 or 1 -- so they use the source-side gate, which is the
+                    # same eligibility condition every other metric uses.
+                    status_ref = generic_status_ref
+                    if formula_key.startswith("runtime") or formula_key.startswith(
+                        "dim_model_conformance_runtime"
+                    ):
+                        status_ref = _bounded_ref(
+                            key_to_col, "runtime_score_status", last_row
+                        )
+                    score_ref = _bounded_ref(key_to_col, formula_key, last_row)
+                    sheet.cell(
+                        row_index,
+                        column,
+                        f'=IFERROR(AVERAGEIFS({score_ref},{bridge_ref},$A{row_index},{form_ref},$B{row_index},{arch_ref},"{architecture}",{eligible_ref},1,{status_ref},"evaluated"),"")',
                     )
-                else:
+                    sheet.cell(
+                        row_index,
+                        column + 1,
+                        f'=COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},{arch_ref},"{architecture}",{eligible_ref},1,{status_ref},"evaluated")',
+                    )
                     rate_formula = (
                         f'=IFERROR(COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},'
                         f'{arch_ref},"{architecture}",{eligible_ref},1,{success_ref},1)/'
                         f'COUNTIFS({bridge_ref},$A{row_index},{form_ref},$B{row_index},'
                         f'{arch_ref},"{architecture}",{eligible_ref},1),"")'
                     )
-                sheet.cell(row_index, column + 2, rate_formula)
-                column += 3
+                    sheet.cell(row_index, column + 2, rate_formula)
+                    column += 3
             row_index += 1
 
+    # The above code path is kept compact because each metric sub-row reuses
+    # the same column layout; the active sub-row is base_row + offset.  This
+    # block ensures the final sheet is auto-sized to its true extent.
     _style_header(sheet)
     _style_body(sheet)
     sheet.freeze_panes = "D2"
     sheet.auto_filter.ref = sheet.dimensions
     sheet.sheet_view.showGridLines = False
     _fit_columns(sheet, maximum=24)
+
+    # Column layout per architecture: (score, N, rate) for each metric, in the
+    # same order as ``rows``.  The score cell is a fraction for the six parent
+    # dimensions but already 0-100 for the weighted composite, so the two need
+    # different number formats -- a percentage format on the weighted column
+    # would render 72.2 as 7220%.
+    weighted_keys = {"quality_static"}
+    metric_columns: list[tuple[int, bool]] = []
+    for metric_index, (_label, key) in enumerate(rows):
+        for arch_index in range(len(ARCHITECTURES)):
+            base = 4 + (arch_index * len(rows) + metric_index) * 3
+            metric_columns.append((base, key in weighted_keys))
+
     for row in range(2, sheet.max_row + 1):
-        for column in range(4, sheet.max_column + 1):
-            if (column - 4) % 3 in (0, 2):
-                sheet.cell(row, column).number_format = "0.0%"
         sheet.cell(row, 3).number_format = "0"
-    score_columns = [
-        get_column_letter(column)
-        for column in range(4, sheet.max_column + 1)
-        if (column - 4) % 3 == 0
-    ]
-    # Formula rules explicitly require a numeric value, so an unavailable
-    # score stays visually blank rather than being painted as a failure.
-    for column in score_columns:
+        for base, is_weighted in metric_columns:
+            sheet.cell(row, base).number_format = "0.0" if is_weighted else "0.0%"
+            sheet.cell(row, base + 1).number_format = "0"
+            sheet.cell(row, base + 2).number_format = "0.0%"
+
+    # Conditional formatting is conservative: only paint success when a real
+    # numeric value exists, so missing data stays blank rather than "failed".
+    # Thresholds are expressed in the cell's own units, so the weighted columns
+    # (0-100) use 80/60 while the fractional columns use 0.8/0.6.
+    for base, is_weighted in metric_columns:
+        high, low = (80, 60) if is_weighted else (0.8, 0.6)
+        column = get_column_letter(base)
         target = f"{column}2:{column}{sheet.max_row}"
         sheet.conditional_formatting.add(
             target,
             FormulaRule(
-                formula=[f"AND(ISNUMBER({column}2),{column}2>=0.8)"],
+                formula=[f"AND(ISNUMBER({column}2),{column}2>={high})"],
                 fill=SUCCESS_FILL,
             ),
         )
         sheet.conditional_formatting.add(
             target,
             FormulaRule(
-                formula=[f"AND(ISNUMBER({column}2),{column}2<0.6)"],
+                formula=[f"AND(ISNUMBER({column}2),{column}2<{low})"],
                 fill=FAIL_FILL,
             ),
         )
     _add_table(sheet, table_name)
+
+
+_TABLE1_METRICS = (
+    ("Compile", "dim_python_syntax", False),
+    ("Struct.", "dim_osis_text", False),
+    ("Constr.", "dim_model_conformance", False),
+    ("Sim.", "generic_text_score", False),
+    ("Time", "efficiency_score", False),
+    ("Resource", "cost_score", False),
+    ("Weighted", "quality_static", True),
+)
+
+
+def _mean_metric(records: list[dict[str, Any]], key: str, weighted: bool) -> float | None:
+    numeric = [
+        float(record[key]) for record in records
+        if isinstance(record.get(key), (int, float))
+    ]
+    if not numeric:
+        return None
+    value = sum(numeric) / len(numeric)
+    return value if weighted else value * 100.0
+
+
+def _score_rows(
+    records: list[dict[str, Any]],
+    *,
+    group_key: str | None = None,
+    group_value: str | None = None,
+    fixed_key: str | None = None,
+    fixed_value: str | None = None,
+) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for architecture in ARCHITECTURES:
+        eligible = [
+            record for record in records
+            if record.get("architecture_id") == architecture
+            and record.get("aggregation_eligible") == 1
+            and (group_key is None or record.get(group_key) == group_value)
+            and (fixed_key is None or record.get(fixed_key) == fixed_value)
+        ]
+        values = [ARCHITECTURE_LABELS[architecture]]
+        values.extend(_mean_metric(eligible, key, weighted) for _, key, weighted in _TABLE1_METRICS)
+        values.append(len(eligible))
+        rows.append(values)
+    return rows
+
+
+def _score_summary_sheet(sheet, records: list[dict[str, Any]], *, group_key: str | None = None,
+                         group_values: tuple[str, ...] = (), group_label: str | None = None,
+                         table_name: str = "Summary", fixed_key: str | None = None,
+                         fixed_value: str | None = None) -> None:
+    headers = ([group_label] if group_key else []) + ["Configuration"]
+    headers.extend(label for label, _, _ in _TABLE1_METRICS)
+    headers.append("N")
+    sheet.append(headers)
+    values = group_values or (None,)
+    for group_value in values:
+        for row in _score_rows(
+            records, group_key=group_key, group_value=group_value,
+            fixed_key=fixed_key, fixed_value=fixed_value,
+        ):
+            sheet.append(([group_value] if group_key else []) + row)
+    _style_header(sheet)
+    _style_body(sheet)
+    sheet.freeze_panes = "B2" if group_label else "A2"
+    sheet.sheet_view.showGridLines = False
+    _fit_columns(sheet, maximum=22)
+    for row in range(2, sheet.max_row + 1):
+        for column in range(2 if group_label else 1, 9 if group_label else 8):
+            sheet.cell(row, column).number_format = "0.0"
+    _add_table(sheet, table_name)
+
+
+def _table1_sheet(sheet, records: list[dict[str, Any]]) -> None:
+    """Write the compact six-configuration table used in the paper.
+
+    Values are averages over formal, aggregation-eligible runs.  The source
+    dimensions are stored as fractions, while the paper table displays all
+    values on a 0--100 scale.
+    """
+
+    headers = [
+        "Configuration", "Compile", "Struct.", "Constr.", "Sim.",
+        "Time", "Resource", "Weighted",
+    ]
+    sheet.append(headers)
+    for row in _score_rows(records):
+        sheet.append(row[:-1])
+    _style_header(sheet)
+    _style_body(sheet)
+    sheet.freeze_panes = "B2"
+    sheet.sheet_view.showGridLines = False
+    for column in range(2, 9):
+        sheet.column_dimensions[get_column_letter(column)].width = 14
+    sheet.column_dimensions["A"].width = 22
+    for row in range(2, sheet.max_row + 1):
+        for column in range(2, 9):
+            sheet.cell(row, column).number_format = "0.0"
+    _add_table(sheet, "Table1")
 
 
 def _group_summary_sheet(sheet, key_to_col: dict[str, int], last_row: int) -> None:
@@ -824,12 +1042,11 @@ def _notes_sheet(sheet, runs_root: Path, records: list[dict[str, Any]]):
         ("识别运行数", len(records)),
         ("纳入正式统计数", sum(item.get("aggregation_eligible") == 1 for item in records)),
         ("排除记录数", sum(item.get("aggregation_eligible") != 1 for item in records)),
-        ("源码主指标", "运行明细中的 CLI模型分（model_score.json:candidate_score）；这是当前正式主评分，不被运行态评分覆盖"),
-        ("运行态旁路指标", "运行态模型分来自 runtime_measurements.json → runtime_score.json；仅在 PyOSIS 执行后快照可用时计算，用于后续逐项参数审计"),
-        ("数据来源", "每个 run_dir 的 manifest/input/frozen_config/evaluation/model_score/runtime_score/timer/backend_status/runtime_measurements JSON"),
+        ("评分规则", "主分来自父仓库 src/evaluation 的 CLI评分；不使用运行态参数评分。"),
+        ("数据来源", "每个 run_dir 的 manifest/input/frozen_config/evaluation/model_score/timer/backend_status JSON"),
         ("正式统计范围", "仅纳入 split=train/test 且未标记 infrastructure_failure 的记录；开发/冒烟记录保留在明细但不进入汇总"),
         ("任务形式", "数据集 full/gen/edit 映射为内部 whole/module/modify，表格统一展示 full/gen/edit"),
-        ("完整成功", "同时满足候选工程、PyOSIS建模、验证、CLI评分和产物完整性"),
+        ("完整成功", "同时满足候选工程、PyOSIS建模、求解收敛、验证、CLI评分和产物完整性；求解失败总分为 0。"),
         ("注意", "框架对比和分组汇总只统计纳入正式统计的记录；空白源码分表示没有可用 CLI 评分，不等同于 0 分。"),
     ]
     for row in rows:
@@ -855,8 +1072,42 @@ def export_results(runs_root: Path, output: Path) -> Path:
     workbook = Workbook()
     default = workbook.active
     workbook.remove(default)
-    # Create all referenced worksheets before writing cross-sheet formulas.
-    comparison = workbook.create_sheet("框架对比")
+    # The workbook has one official score path: the parent repository's
+    # reference-aware source evaluator.  Runtime parameter scoring is not a
+    # formal result and is deliberately absent from this workbook.
+    table1 = workbook.create_sheet("Table 1")
+    _table1_sheet(table1, records)
+    task_forms = workbook.create_sheet("按任务形式")
+    _score_summary_sheet(
+        task_forms,
+        records,
+        group_key="dataset_form",
+        group_values=DATASET_FORMS,
+        group_label="Task form",
+        table_name="ByTaskForm",
+    )
+    bridge_sheet_names = {
+        "cantilever_box": "桥型-悬浇箱梁",
+        "conventional_box": "桥型-现浇箱梁",
+        "hollow_slab": "桥型-空心板",
+        "precast_small_box": "桥型-预制小箱梁",
+        "precast_t_girder": "桥型-预制T梁",
+        "rigid_frame": "桥型-刚构箱梁",
+    }
+    for bridge_type in BRIDGE_TYPES:
+        bridge_sheet = workbook.create_sheet(bridge_sheet_names[bridge_type])
+        _score_summary_sheet(
+            bridge_sheet,
+            records,
+            group_key="dataset_form",
+            group_values=DATASET_FORMS,
+            group_label="Task form",
+            table_name="ByBridge" + bridge_type.replace("_", "")[:15],
+            fixed_key="bridge_type",
+            fixed_value=bridge_type,
+        )
+    comparison_static = workbook.create_sheet("按父仓库规则")
+    per_bridge_static = workbook.create_sheet("每桥型-父仓库")
     group_summary = workbook.create_sheet("分组汇总")
     runs_sheet = workbook.create_sheet("运行明细")
     failure_sheet = workbook.create_sheet("失败汇总")
@@ -865,33 +1116,37 @@ def export_results(runs_root: Path, output: Path) -> Path:
 
     key_to_col = _runs_sheet(runs_sheet, records)
     last_row = runs_sheet.max_row
-    _comparison_sheet(comparison, key_to_col, last_row)
+    # Sheet A: 父仓库完整规则，static 路径
+    # 与父仓库建模任务线 Table 1 的 7 列一一对应：
+    #   Compile  (python_syntax)      编译通过率
+    #   Struct   (osis_text)          工程结构完整性
+    #   Constr   (model_conformance)  构造正确性 —— 静态 AST 抽取
+    #   Sim      (generic_text)       与参考实现的文本相似度
+    #   Time     (efficiency)         耗时衰减分
+    #   Resource (cost)               资源消耗衰减分
+    #   Weighted                      上面 6 项按 evaluation.yaml 权重加权
+    _comparison_sheet(
+        comparison_static, key_to_col, last_row,
+        rows=[
+            ("Compile 编译通过率", "dim_python_syntax"),
+            ("Struct 结构完整性", "dim_osis_text"),
+            ("Constr 构造正确性", "dim_model_conformance"),
+            ("Sim 文本相似度", "generic_text_score"),
+            ("Time 耗时衰减分", "efficiency_score"),
+            ("Resource 资源消耗分", "cost_score"),
+            ("Weighted 加权综合分", "quality_static"),
+        ],
+        table_name="ByParentRepoRules",
+    )
+    _per_bridge_detail_sheet(
+        per_bridge_static, records,
+        score_key="quality_static",
+        title="每桥型-父仓库",
+    )
     _group_summary_sheet(group_summary, key_to_col, last_row)
     _failure_sheet(failure_sheet, records)
     _frozen_config_sheet(frozen_sheet, records)
     _notes_sheet(notes, Path(runs_root), records)
-    # Keep historical workbooks stable when they predate runtime sidecars.
-    # Once a runner has emitted either availability status, expose the two
-    # runtime views alongside (never instead of) the source-score views.
-    runtime_present = any(
-        record.get("runtime_score_status") or record.get("runtime_measurements_status")
-        for record in records
-    )
-    if runtime_present:
-        runtime_comparison = workbook.create_sheet("运行态对比", 1)
-        _comparison_sheet(
-            runtime_comparison,
-            key_to_col,
-            last_row,
-            score_key="runtime_score",
-            status_key="runtime_score_status",
-            score_label="运行态分均值",
-            rate_label="运行态可用率",
-            rate_mode="evaluated",
-            table_name="RuntimeComparison",
-        )
-        runtime_items = workbook.create_sheet("运行态逐项评分", 2)
-        _runtime_item_sheet(runtime_items, records)
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
     workbook.calculation.calcMode = "auto"
@@ -923,4 +1178,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

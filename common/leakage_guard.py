@@ -10,7 +10,12 @@ results. Checks:
                       input.json and adapter_request.json serialise) contains
                       no test template name, no raw ``.agents/skills`` path
                       and no ``references/templates`` fragment;
-3. prestage_clean   - no staged base file originates from a test template;
+3. prestage_clean   - no staged base file originates from a test template OTHER
+                      than the task's own case.  ``gen``/``edit`` are defined as
+                      "modify this case's project", so their base files
+                      necessarily come from that case's own template; handing a
+                      task a DIFFERENT test case's files is what must not happen.
+                      ``full`` stages nothing, so this is vacuous there;
 4. no_exact_dup     - no test template is byte-identical (whole directory) to
                       any train template mounted in the snapshot.
 """
@@ -74,7 +79,22 @@ def task_boundary_issues(task_dict: dict, test_names: set[str]) -> list[str]:
     return issues
 
 
-def prestage_issues(base_files: tuple[str, ...], bridge: str, test_names: set[str]) -> list[str]:
+def prestage_issues(
+    base_files: tuple[str, ...],
+    bridge: str,
+    test_names: set[str],
+    own_cases: frozenset[str] | set[str] = frozenset(),
+) -> list[str]:
+    """Staged base files that come from another test case's template.
+
+    ``gen``/``edit`` start from a case's own project by definition, so templates
+    named by the task's own ``source``/``source_b`` are allowed.  What is still
+    rejected is a task being handed base files from a *different* test case --
+    that would seed one test case's run with another case's model.  ``full``
+    stages no base files, so this check is vacuous for it, which is why it never
+    fired before ``gen``/``edit`` ran.
+    """
+
     issues: list[str] = []
     marker = "references/templates/"
     for raw in base_files:
@@ -84,6 +104,8 @@ def prestage_issues(base_files: tuple[str, ...], bridge: str, test_names: set[st
             continue
         rest = normalized[position + len(marker):]
         template_name = rest.split("/", 1)[0]
+        if template_name in own_cases:
+            continue
         if template_name in test_names:
             issues.append(f"staged base file comes from test template: {raw}")
     return issues
@@ -139,6 +161,7 @@ def run_guard(
     skills_dir: Path,
     task_dict: dict,
     base_files: tuple[str, ...] = (),
+    own_cases: frozenset[str] | set[str] = frozenset(),
 ) -> GuardReport:
     """Run every leakage check. Returns a report; ok=False must block the run."""
 
@@ -149,7 +172,7 @@ def run_guard(
 
     snapshot_hits = scan_snapshot_for_test_names(skills_dir, test_names)
     boundary = task_boundary_issues(task_dict, test_names)
-    staging = prestage_issues(base_files, bridge, bridge_test)
+    staging = prestage_issues(base_files, bridge, bridge_test, own_cases)
 
     train_map = yaml.safe_load(
         (parent_repo / "configs" / "datasets.yaml").read_text(encoding="utf-8")

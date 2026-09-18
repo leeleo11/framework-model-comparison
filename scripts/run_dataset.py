@@ -84,11 +84,13 @@ from baselines._framework_common import (  # noqa: E402
 # wall-clock remains the only gate this protocol imposes.
 FROZEN_MAX_TOKENS = 200_000
 FROZEN_MODEL_TIMEOUT_S = 900.0
-FROZEN_GENERATION_STEP_TIMEOUT_S = 3600.0
+FROZEN_GENERATION_STEP_TIMEOUT_S = 6000.0
 FROZEN_POST_GENERATION_RESERVE_S = 1800.0
-# Generation is capped at one hour; the formal 90-minute task budget leaves
-# 30 minutes for unified PyOSIS execution and source scoring. For an explicit
-# shorter override, the generation cap is reduced to preserve that reserve.
+# Generation is capped at the parent repo's own bridge-building limit (6000s),
+# so the comparison never truncates a framework below what the native OSIS-AI
+# toolchain allows itself.  The remaining reserve covers unified PyOSIS
+# execution and source scoring.  For an explicit shorter override, the
+# generation cap is reduced to preserve that reserve.
 # No step cap either: see FROZEN_MAX_TOKENS above.
 FROZEN_MAX_STEPS = 0
 BRIDGE_SKILLS = {
@@ -172,6 +174,20 @@ INFRA_MARKERS = (
     "10054",
     # T6 isolated opencode server never came up (port clash / slow start)
     "did not become healthy",
+    # The model gateway runs the model in "thinking mode", which requires the
+    # client to echo the previous turn's ``reasoning_content`` back; litellm's
+    # OpenAI-compatible path does not, and the gateway rejects the call
+    # outright.  The run then has ZERO successful model calls, so this is a
+    # transport/protocol failure and must not be scored as a capability
+    # outcome.  Observed on T4; T3 and T5 share the same client stack.
+    "reasoning_content",
+    "litellm.badrequesterror",
+    # The gateway sheds load with HTTP 503 while the host CPU is above its own
+    # threshold.  Observed message: "system cpu overloaded (current: 94.9%,
+    # threshold: 90%)".  No model call succeeds, so this is infrastructure.
+    "cpu overloaded",
+    "system_cpu_overloaded",
+    "error code: 503",
 )
 
 
@@ -272,10 +288,10 @@ def _is_infra_error(text: str | None) -> bool:
 def _effective_generation_timeout_s(total_timeout_s: float) -> float:
     """Return the generation budget while reserving post-processing time.
 
-    The formal profile is 5400s total, of which at most 3600s is available to
-    a framework.  Keeping a reserve makes an explicit 3600s diagnostic run
-    behave like the previous one-hour profile instead of starving PyOSIS and
-    the source scorer.
+    The formal profile is 7800s total, of which at most 6000s is available to a
+    framework -- the same generation budget the parent repo's native toolchain
+    grants itself.  Keeping a reserve makes an explicit shorter run behave like
+    the formal profile instead of starving PyOSIS and the source scorer.
     """
 
     total = float(total_timeout_s)
@@ -750,10 +766,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Official runs MUST execute PyOSIS; the flag only exists for diagnostics.
     parser.add_argument("--no-pyosis", action="store_true",
                         help="diagnostics only: skip PyOSIS execution and CLI scoring")
-    parser.add_argument(
-        "--solve-gate", action=argparse.BooleanOptionalAction, default=True,
-        help="run engine.solve() and require convergence (default: enabled; use --no-solve-gate for diagnostics)",
-    )
+    # Official runs include the PyOSIS solve gate by default.  Keep an
+    # explicit diagnostics-only escape hatch for reproducing legacy builds.
+    parser.add_argument("--solve-gate", dest="solve_gate", action="store_true", default=True)
+    parser.add_argument("--no-solve-gate", dest="solve_gate", action="store_false",
+                        help="diagnostics only: build/probe without engine.solve()")
     parser.add_argument("--total-timeout-s", type=_positive_float, default=None)
     return parser
 
@@ -808,6 +825,9 @@ def main(argv: list[str] | None = None) -> int:
         report = run_guard(
             parent_repo=args.parent_repo, bridge=args.bridge, skills_dir=skills_dir,
             task_dict=task.to_dict(), base_files=entry.base_files,
+            # gen/edit are "modify this case's project", so this case's own
+            # template is a legitimate base; another test case's template is not.
+            own_cases={entry.source, entry.source_b} - {""},
         )
     except Exception as exc:  # noqa: BLE001
         # The gate is fail-closed: a guard crash must never silently turn into
@@ -1129,9 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         if not compile_result.get("passed", False) or not backend.get("model_created", False):
             gate = False
         official = build_official_evaluation(
-            run_dir=run_dir_path, ref_score=ref_score, model_conformance_gate=gate,
-            solve_required=args.solve_gate,
-            config_path=Path(args.parent_repo) / "configs" / "evaluation.yaml",
+            run_dir=run_dir_path, ref_score=ref_score, model_conformance_gate=gate
         )
         overwrite_evaluation(run_dir_path, official)
         summary = replace(summary, evaluation=official)
@@ -1146,9 +1164,7 @@ def main(argv: list[str] | None = None) -> int:
         from common.official_evaluation import build_official_evaluation, overwrite_evaluation
 
         official = build_official_evaluation(
-            run_dir=Path(summary.run_dir), ref_score=None, model_conformance_gate=False,
-            solve_required=args.solve_gate,
-            config_path=Path(args.parent_repo) / "configs" / "evaluation.yaml",
+            run_dir=Path(summary.run_dir), ref_score=None, model_conformance_gate=False
         )
         overwrite_evaluation(Path(summary.run_dir), official)
         summary = replace(summary, evaluation=official)

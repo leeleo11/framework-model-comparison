@@ -228,6 +228,13 @@ def prestage_base_files(
     ``full`` entries stage nothing. Each base file is copied from the raw
     (trusted, tooling-side) skills tree to ``<candidate_root>/py/<template
     relative path>``. Copying the ``y`` answer itself raises :class:`LeakageError`.
+
+    The answer check compares the TEMPLATE NAME as well as the relative path.
+    ``edit`` deliberately stages the previous template's copy of the module
+    under modification (``base_files = B 画像 + B prep, with the target cluster
+    taken from A``), so a base file legitimately shares ``y``'s relative path
+    while coming from a different template -- different content, not the answer.
+    Only the same template's same path is the answer.
     """
 
     if entry.form == "full":
@@ -236,9 +243,13 @@ def prestage_base_files(
     copied: list[str] = []
     for raw in entry.base_files:
         relative = _template_relative(raw)
-        if entry.y_relative and Path(relative).as_posix() == Path(entry.y_relative).as_posix():
+        if (
+            entry.y_relative
+            and Path(relative).as_posix() == Path(entry.y_relative).as_posix()
+            and _y_template(raw) == entry.y_template
+        ):
             raise LeakageError(
-                f"base_files contain the standard answer y: {relative}"
+                f"base_files contain the standard answer y: {raw}"
             )
         source = Path(parent_repo) / raw.replace("\\", "/")
         if not source.is_file():

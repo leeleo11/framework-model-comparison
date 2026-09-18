@@ -18,10 +18,13 @@ BRIDGE_TYPES = (
 TASK_FORMS = ("whole", "module", "modify")
 DIFFICULTIES = ("L1", "L2", "L3")
 TASK_STAGES = ("P0", "P1", "P2", "P3", "P4", "P5", "P6")
-# Formal comparison baseline: 90 minutes per task, shared by T1-T6.  The first
-# hour is reserved for framework generation; the remaining 30 minutes cover
-# compilation, PyOSIS and source scoring.
-DEFAULT_TOTAL_TIMEOUT_S = 5400.0
+# Formal comparison baseline.  The generation budget matches the parent repo's
+# own bridge-building limit (``opencode_client.DEFAULT_TIMEOUT`` = 6000s, also
+# used by ``train/runner.py`` and ``dashboard/jobs.py``), so no architecture is
+# cut short relative to what the native OSIS-AI toolchain grants itself.  The
+# reserve on top covers compilation, PyOSIS execution and source scoring, which
+# are measured at under 200s in practice.
+DEFAULT_TOTAL_TIMEOUT_S = 7800.0
 DEFAULT_SUBTASK_TIMEOUT_S = {
     "P0": 300.0,
     "P1": 450.0,

@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.run_campaign import run_dir_for, run_is_terminal
+from scripts.run_campaign import build_command, run_dir_for, run_is_terminal
+from scripts.run_dataset import build_parser as build_dataset_parser
 
 
 def test_run_dir_for_uses_stable_matrix_name(tmp_path: Path):
@@ -24,3 +25,25 @@ def test_run_is_terminal_requires_auditable_pair(tmp_path: Path):
     assert not run_is_terminal(tmp_path)
     (tmp_path / "manifest.json").write_text(json.dumps({}), encoding="utf-8")
     assert run_is_terminal(tmp_path)
+
+
+def test_campaign_child_command_enables_solve_gate(tmp_path: Path):
+    class Args:
+        bridge = "osis-bridge-cantilever-box"
+        form = "full"
+        index = 0
+        seed = 0
+        runs_dir = tmp_path / "runs"
+        parent_repo = None
+
+    command = build_command(Args(), "T6")
+    assert "--solve-gate" in command
+
+
+def test_dataset_parser_enables_solve_gate_by_default():
+    args = build_dataset_parser().parse_args([
+        "--architecture", "T1",
+        "--bridge", "osis-bridge-cantilever-box",
+        "--form", "full",
+    ])
+    assert args.solve_gate is True

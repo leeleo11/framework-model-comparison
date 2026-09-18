@@ -138,28 +138,46 @@ def test_export_results_creates_formatted_workbook_with_summary_formulas(tmp_pat
     output = export_results(tmp_path / "runs", tmp_path / "results.xlsx")
     workbook = load_workbook(output, data_only=False)
 
-    assert workbook.sheetnames == [
-        "框架对比",
-        "分组汇总",
-        "运行明细",
-        "失败汇总",
-        "冻结配置",
-        "说明",
+    assert workbook.sheetnames[:3] == ["Table 1", "按任务形式", "桥型-悬浇箱梁"]
+    assert "按父仓库规则" in workbook.sheetnames
+    assert "桥型-刚构箱梁" in workbook.sheetnames
+    table1 = workbook["Table 1"]
+    assert [cell.value for cell in table1[1]] == [
+        "Configuration", "Compile", "Struct.", "Constr.", "Sim.",
+        "Time", "Resource", "Weighted",
     ]
+    assert table1[2][0].value == "T1 direct"
+    assert table1[7][0].value == "T6 OSIS-AI"
+    task_forms = workbook["按任务形式"]
+    assert [cell.value for cell in task_forms[1]][:2] == ["Task form", "Configuration"]
+    assert {task_forms.cell(row, 1).value for row in range(2, task_forms.max_row + 1)} == {
+        "full", "gen", "edit",
+    }
+    bridge = workbook["桥型-悬浇箱梁"]
+    assert {bridge.cell(row, 1).value for row in range(2, bridge.max_row + 1)} == {
+        "full", "gen", "edit",
+    }
     runs = workbook["运行明细"]
     assert runs.max_row == 2
     assert runs["A2"].value == "bridge_case__full__000"
     assert runs["B2"].value == "test"
     assert runs["A1"].font.name == "Arial"
-    summary = workbook["框架对比"]
-    assert summary.max_row == 19  # header + 6 bridge types × 3 forms
+    summary = workbook["按父仓库规则"]
+    # One physical row per (bridge type × dataset form): 6 × 3 + 1 header = 19.
+    # Each metric gets its own column triple inside every architecture group, so
+    # adding metrics widens the sheet rather than lengthening it.
+    assert summary.max_row == 6 * 3 + 1
     assert "full" in [summary.cell(2, 2).value, summary.cell(3, 2).value]
     assert any(
         isinstance(cell.value, str) and "AVERAGEIFS" in cell.value
         for row in summary.iter_rows()
         for cell in row
     )
-    assert summary["D2"].number_format == "0.0%"
+    assert any(
+        isinstance(cell.number_format, str) and "%" in cell.number_format
+        for row in summary.iter_rows()
+        for cell in row
+    )
 
 
 def test_nonformal_and_infrastructure_runs_are_visible_but_not_aggregated(tmp_path: Path):
@@ -223,14 +241,17 @@ def test_comparison_matrix_has_one_row_for_each_bridge_and_dataset_form(tmp_path
     )
     output = export_results(root, tmp_path / "results.xlsx")
     workbook = load_workbook(output, data_only=False)
-    sheet = workbook["框架对比"]
+    sheet = workbook["按父仓库规则"]
+    # Header + 6 bridge types × 3 forms = 19 rows, but several (bridge, form)
+    # cells repeat for each of the 6 metrics.  The 18 (bridge, form) pairs
+    # are still present as unique values.
     rows = {(sheet.cell(row, 1).value, sheet.cell(row, 2).value) for row in range(2, sheet.max_row + 1)}
     assert len(rows) == 18
     assert ("cantilever_box", "full") in rows
     assert ("precast_t_girder", "edit") in rows
 
 
-def test_runtime_sidecars_are_exported_separately_from_source_matrix(tmp_path: Path):
+def test_runtime_sidecars_do_not_enter_official_workbook(tmp_path: Path):
     root = tmp_path / "runs"
     run = _make_run(root, score=0.91)
     _write_json(
@@ -265,30 +286,10 @@ def test_runtime_sidecars_are_exported_separately_from_source_matrix(tmp_path: P
         },
     )
 
-    records = collect_run_records(root)
-    assert records[0]["runtime_score"] == 0.734
-    assert records[0]["runtime_score_status"] == "evaluated"
-    assert records[0]["runtime_missing_params"] == "has_prestress"
-
     output = export_results(root, tmp_path / "runtime-results.xlsx")
     workbook = load_workbook(output, data_only=False)
-    assert "运行态对比" in workbook.sheetnames
-    assert "运行态逐项评分" in workbook.sheetnames
-    runtime_comparison_headers = [cell.value for cell in workbook["运行态对比"][1]]
-    assert any("运行态可用率" in str(value) for value in runtime_comparison_headers)
     detail_headers = [cell.value for cell in workbook["运行明细"][1]]
-    assert "运行态模型分" in detail_headers
-    assert "运行态评分状态" in detail_headers
-    runtime_headers = [cell.value for cell in workbook["运行态逐项评分"][1]]
-    assert "维度" in runtime_headers
-    assert "评分项" in runtime_headers
-    assert "参数键" in runtime_headers
-    assert "实际值" in runtime_headers
-    assert workbook["运行态逐项评分"].max_row >= 3
-    key_col = runtime_headers.index("参数键") + 1
-    item_col = runtime_headers.index("评分项") + 1
-    assert any(
-        workbook["运行态逐项评分"].cell(row, item_col).value == "span_fit"
-        and workbook["运行态逐项评分"].cell(row, key_col).value == "L"
-        for row in range(2, workbook["运行态逐项评分"].max_row + 1)
-    )
+    assert "按实际建模质量" not in workbook.sheetnames
+    assert "运行态逐项评分" not in workbook.sheetnames
+    assert "运行态模型分" not in detail_headers
+    assert "运行态评分状态" not in detail_headers

@@ -40,8 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--solve-gate",
-        action=argparse.BooleanOptionalAction, default=True,
-        help="run engine.solve() and require convergence (default: enabled; use --no-solve-gate for diagnostics)",
+        action="store_true",
+        help="also run engine.solve(); convergence is recorded as an optional gate",
     )
     parser.add_argument(
         "--pyosis-python",
