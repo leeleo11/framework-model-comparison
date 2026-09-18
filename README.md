@@ -17,6 +17,8 @@
 
 T1–T5 的区别只在编排框架，T6 使用 OSIS 原生编排。任务、技能快照、PyOSIS、评分器和输出契约保持一致。
 
+六个架构的环境、工具交互和单架构运行命令见 [`docs/框架使用说明.md`](docs/框架使用说明.md)。
+
 ## 环境要求
 
 - Windows（正式 T1–T6 运行依赖 Windows 的 OSIS/PyOSIS/OpenCode 进程接口）；
