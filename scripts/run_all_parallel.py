@@ -52,7 +52,12 @@ def build_command(args: argparse.Namespace, architecture: str) -> list[str]:
         # Formal runs must include the PyOSIS solve gate.  ``--no-pyosis``
         # remains an explicit diagnostics-only escape hatch in run_dataset.
         "--solve-gate",
+        "--model", getattr(args, "model", "deepseek-v4.1-flash-expires-on-0910"),
+        "--base-url", getattr(args, "base_url", "http://47.92.150.231/v1"),
+        "--temperature", str(getattr(args, "temperature", 0.0)),
     ]
+    if getattr(args, "reasoning_effort", None):
+        command += ["--reasoning-effort", args.reasoning_effort]
     # Without this the child falls back to its own resolver, and a campaign
     # must read the same parent repo the campaign was launched against.
     parent_repo = getattr(args, "parent_repo", None)
@@ -95,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--form", default="full")
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--model", default="deepseek-v4.1-flash-expires-on-0910")
+    parser.add_argument("--base-url", default="http://47.92.150.231/v1")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default=None)
     parser.add_argument("--jobs", type=int, default=3,
                         help="concurrent generations (execution self-serialises)")
     parser.add_argument("--architectures", nargs="*", default=list(ARCHITECTURES))

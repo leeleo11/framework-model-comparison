@@ -168,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--architectures", nargs="+", default=list(ARCHITECTURES))
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--jobs", type=int, default=3)
+    parser.add_argument("--model", default="deepseek-v4.1-flash-expires-on-0910")
+    parser.add_argument("--base-url", default="http://47.92.150.231/v1")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default=None)
     parser.add_argument("--archive-root", type=Path, default=PROJECT_ROOT / "runs" / "archive")
     parser.add_argument("--parent-repo", type=Path, default=None,
                         help="OSIS skill repository for every child run "
@@ -200,6 +204,10 @@ def main(argv: list[str] | None = None) -> int:
         ns.index = args.index
         ns.seed = seed
         ns.parent_repo = args.parent_repo
+        ns.model = args.model
+        ns.base_url = args.base_url
+        ns.temperature = args.temperature
+        ns.reasoning_effort = args.reasoning_effort
         ns.log_dir = PROJECT_ROOT / "tmp" / f"campaign-{args.label}" / "logs"
         target = run_dir_for(runs_dir, bridge, form, args.index, arch, seed)
         archive_stale(target, stale_archive)

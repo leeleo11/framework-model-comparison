@@ -147,6 +147,17 @@ uv run python scripts/run_dataset.py `
 
 支持的桥型名称以 `common/task_schema.py` 为准，例如 `osis-bridge-cantilever-box`、`osis-bridge-rigid-frame-box`、`osis-bridge-precast-t-girder`、`osis-bridge-precast-small-box`、`osis-bridge-conventional-box` 和 `osis-bridge-hollow-slab`。
 
+模型设置可以按运行切换：
+
+```powershell
+uv run python scripts/run_dataset.py `
+  --architecture T2 --bridge osis-bridge-cantilever-box --form full `
+  --model deepseek-v4.1-flash-expires-on-0910 --reasoning-effort high
+```
+
+`--reasoning-effort` 支持 `low`、`medium`、`high`；省略时不发送该字段，保持旧实验口径。
+模型 ID、温度和思考强度都会写入每个 run 的 `frozen_config.json`。
+
 正式运行默认开启求解并要求收敛。诊断时可以使用：
 
 ```powershell
@@ -181,6 +192,15 @@ uv run python scripts/run_dataset.py `
 
 ```powershell
 uv run python scripts/run_campaign.py --label formal-run --auto-forms --resume
+```
+
+批量运行也可统一指定模型和强度：
+
+```powershell
+uv run python scripts/run_campaign.py `
+  --label high-effort-run --auto-forms --resume `
+  --model deepseek-v4.1-flash-expires-on-0910 `
+  --reasoning-effort high
 ```
 
 只有上一阶段同时生成 `evaluation.json` 和 `manifest.json` 的任务，才会进入下一阶段。已有终态结果会跳过，中断任务可以重跑。

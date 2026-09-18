@@ -49,6 +49,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 12000
 DEFAULT_REQUEST_TIMEOUT_S = 180.0
 DEFAULT_MAX_STEPS = 24
+REASONING_EFFORTS = ("low", "medium", "high")
 
 
 def _recursion_limit(max_steps: int, default_steps: int = 10_000) -> int:
@@ -72,7 +73,9 @@ class T2Config:
     temperature: float = DEFAULT_TEMPERATURE
     max_tokens: int = DEFAULT_MAX_TOKENS
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S
+    reasoning_effort: str | None = None
     max_steps: int = DEFAULT_MAX_STEPS
+    reasoning_effort: str | None = None
 
     @classmethod
     def from_env(
@@ -85,6 +88,7 @@ class T2Config:
         max_tokens: int | None = None,
         request_timeout_s: float | None = None,
         max_steps: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> "T2Config":
         resolved_key = api_key or os.environ.get("OSIS_MODEL_API_KEY") or os.environ.get(
             "OSIS_API_KEY"
@@ -120,6 +124,11 @@ class T2Config:
                 max_steps
                 if max_steps is not None
                 else int(os.environ.get("T2_MAX_STEPS", DEFAULT_MAX_STEPS))
+            ),
+            reasoning_effort=(
+                reasoning_effort
+                if reasoning_effort is not None
+                else os.environ.get("OSIS_MODEL_REASONING_EFFORT") or None
             ),
         )
 
@@ -221,6 +230,7 @@ class OpenAICompatibleChatModel(BaseChatModel):
     temperature: float = DEFAULT_TEMPERATURE
     max_tokens: int = DEFAULT_MAX_TOKENS
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S
+    reasoning_effort: str | None = None
     bound_tools: tuple[dict[str, Any], ...] = Field(default_factory=tuple, exclude=True)
     bound_tool_choice: str | None = Field(default=None, exclude=True)
 
@@ -261,6 +271,8 @@ class OpenAICompatibleChatModel(BaseChatModel):
         # endpoint's own ceiling applies, identically for every architecture.
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         if self.bound_tools:
             payload["tools"] = list(self.bound_tools)
             if self.bound_tool_choice:

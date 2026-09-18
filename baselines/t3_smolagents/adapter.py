@@ -221,6 +221,8 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         client_kwargs={"timeout": float(request["request_timeout_s"]), "max_retries": 2},
         max_tokens=resolve_max_tokens(request.get("max_tokens")),
         temperature=float(request.get("temperature", 0.0)),
+        **({"reasoning_effort": request["reasoning_effort"]}
+           if request.get("reasoning_effort") else {}),
     )
     agent = CodeAgent(
         tools=tools,

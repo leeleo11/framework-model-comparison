@@ -714,6 +714,7 @@ def _write_frozen_config(
         "model": args.model,
         "base_url": args.base_url,
         "temperature": args.temperature,
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
         "max_tokens": FROZEN_MAX_TOKENS,
         "weknora_enabled": knowledge_search_enabled(),
         "model_timeout_s": FROZEN_MODEL_TIMEOUT_S,
@@ -761,6 +762,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=FORMAL_MODEL_ID)
     parser.add_argument("--base-url", default="http://47.92.150.231/v1")
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default=None,
+                        help="optional provider reasoning level; omitted preserves the legacy request")
     parser.add_argument("--max-attempts", type=_positive_int, default=4)
     parser.add_argument("--retry-backoff-s", type=_nonnegative_float, default=120.0)
     # Official runs MUST execute PyOSIS; the flag only exists for diagnostics.
@@ -915,6 +918,7 @@ def main(argv: list[str] | None = None) -> int:
                 # task-wide deadline is already close.
                 request_timeout_s=max(1.0, min(FROZEN_MODEL_TIMEOUT_S, remaining)),
                 temperature=args.temperature,
+                reasoning_effort=args.reasoning_effort,
             )
             meta_path = workspace / "t1_generation.json"
             _require_completed(
@@ -935,6 +939,7 @@ def main(argv: list[str] | None = None) -> int:
                     temperature=args.temperature, max_tokens=FROZEN_MAX_TOKENS,
                     request_timeout_s=max(1.0, min(FROZEN_MODEL_TIMEOUT_S, remaining)),
                     max_steps=FROZEN_MAX_STEPS,
+                    reasoning_effort=args.reasoning_effort,
                 ),
                 deadline_monotonic=min(
                     generation_deadline,
@@ -968,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
                         "total_timeout_s": task_spec.total_timeout_s,
                         "subtask_timeout_s": task_spec.subtask_timeout_s,
                         "temperature": args.temperature,
+                        "reasoning_effort": args.reasoning_effort,
                     },
                     ensure_ascii=False, indent=2,
                 ),

@@ -285,6 +285,7 @@ def _prepare_isolated_env(
     model: str = FORMAL_MODEL_ID,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = 0.0,
+    reasoning_effort: str | None = None,
 ) -> dict[str, str]:
     """Write the isolated opencode config (provider pin + train-all skills) and
     return the env for launching a dedicated server."""
@@ -353,6 +354,8 @@ def _prepare_isolated_env(
                             "output": ["text"],
                         },
                         "options": {"temperature": temperature},
+                        **({"variants": {reasoning_effort: {"reasoning_effort": reasoning_effort}}}
+                           if reasoning_effort else {}),
                         # Match the normal OSIS-AI context window.  The
                         # output cap remains the frozen comparison cap passed
                         # by run_dataset.py, so all six architectures retain
@@ -366,7 +369,7 @@ def _prepare_isolated_env(
                 },
             }
         },
-        "model": f"comparison/{model}",
+        "model": f"comparison/{model}{('#' + reasoning_effort) if reasoning_effort else ''}",
         "default_agent": "build",
         "permission": {"*": "allow"},
     }
@@ -779,6 +782,7 @@ def generate_t6(
             model=request["model"],
             max_tokens=resolve_max_tokens(request.get("max_tokens")),
             temperature=float(request.get("temperature", 0.0)),
+            reasoning_effort=request.get("reasoning_effort"),
         )
         # Keep an auditable record in the framework metadata as well as the
         # isolated config directory.  This proves which packaged AGENTS.md
@@ -846,8 +850,11 @@ def generate_t6(
 
         def _chat() -> None:
             try:
+                selected_model = request["model"]
+                if request.get("reasoning_effort"):
+                    selected_model += f"#{request['reasoning_effort']}"
                 client.chat(
-                    sid, prompt, provider_id="comparison", model_id=request["model"],
+                    sid, prompt, provider_id="comparison", model_id=selected_model,
                     timeout=generation_timeout,
                 )
             except BaseException as exc:  # noqa: BLE001 - report to outer run

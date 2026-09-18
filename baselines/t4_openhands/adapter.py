@@ -240,6 +240,8 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         num_retries=2,
         api_mode="chat",  # force chat-completions; glm/deepseek endpoints do not serve /responses
         temperature=float(request.get("temperature", 0.0)),
+        **({"reasoning_effort": request["reasoning_effort"]}
+           if request.get("reasoning_effort") else {}),
     )
     agent = Agent(
         llm=llm,

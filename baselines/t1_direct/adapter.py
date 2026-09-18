@@ -213,6 +213,7 @@ def generate_t1(
     max_tokens: int,
     request_timeout_s: float,
     temperature: float = 0.0,
+    reasoning_effort: str | None = None,
 ) -> Path:
     started = time.monotonic()
     workspace = Path(workspace)
@@ -238,6 +239,7 @@ def generate_t1(
             temperature=temperature,
             max_tokens=max_tokens,
             request_timeout_s=request_timeout_s,
+            reasoning_effort=reasoning_effort,
         )
         from langchain_core.messages import HumanMessage
 

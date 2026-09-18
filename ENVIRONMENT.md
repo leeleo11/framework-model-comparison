@@ -153,6 +153,19 @@ $env:OSIS_MODEL_API_KEY = '<你的密钥>'
 - 变量名也可用 `OSIS_API_KEY`（别名）。两个都没设 → 运行会以 `api_key_missing` 拒绝启动。
 - 密钥只从环境读，**不写入任何运行产物**。
 
+模型与思考强度可在单次运行或整批实验中切换。支持 `low`、`medium`、`high`：
+
+```powershell
+uv run python scripts\run_dataset.py `
+  --architecture T2 --bridge osis-bridge-cantilever-box --form full `
+  --model deepseek-v4.1-flash-expires-on-0910 --reasoning-effort high
+```
+
+不传 `--reasoning-effort` 时不会向网关发送该字段，保持历史默认行为。显式选择后，T1–T5
+将其作为 OpenAI-compatible 请求参数传递，T6 将其作为 OpenCode model variant 传递；模型名、
+温度和强度都会冻结到 `frozen_config.json`。模型网关若不支持所选等级会返回请求失败，运行不会
+静默改用另一档。
+
 Windows 的系统代理会劫持到该网关的请求。**驱动脚本会自动为子进程补 `NO_PROXY`**，不需要手工设置；
 但如果绕过驱动直接调模型，需要自己处理。
 
