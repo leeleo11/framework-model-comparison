@@ -69,7 +69,7 @@ uv run python scripts/setup_framework_envs.py --only t3 --base-python (uv python
 推荐使用环境变量：
 
 ```powershell
-$env:OSIS_PARENT_REPO = 'E:\实习\osis-skill-enhance-main'
+$env:OSIS_PARENT_REPO = '<path-to-osis-skill-enhance-main>'
 ```
 
 也可以在本机创建未提交的配置文件：
@@ -84,7 +84,9 @@ Copy-Item configs/parent_repo.txt configs/parent_repo.local.txt
 正式运行前，确认父仓库评分权重合计为 1：
 
 ```powershell
-python -c "import yaml; from pathlib import Path; w=yaml.safe_load(Path(r'E:\实习\osis-skill-enhance-main\configs\evaluation.yaml').read_text(encoding='utf-8'))['weights']; print(sum(w.values()))"
+$parentConfig = Join-Path $env:OSIS_PARENT_REPO 'configs/evaluation.yaml'
+$env:PARENT_CONFIG = $parentConfig
+python -c "import yaml, os; from pathlib import Path; w=yaml.safe_load(Path(os.environ['PARENT_CONFIG']).read_text(encoding='utf-8'))['weights']; print(sum(w.values()))"
 ```
 
 输出应为 `1.0`。六项评分由父仓库统一执行：文本、工程结构、Python 语法、模型符合度、效率和 Token 成本。
