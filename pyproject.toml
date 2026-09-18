@@ -1,0 +1,25 @@
+[project]
+name = "osis-framework-comparison"
+version = "0.1.0"
+description = "Framework-neutral OSIS modeling comparison scaffold"
+requires-python = ">=3.12"
+dependencies = [
+    "langgraph==1.2.11",
+    "langchain==1.3.18",
+    "openpyxl>=3.1",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "pytest>=8",
+]
+
+[project.optional-dependencies]
+# Per-framework environments are created by scripts/setup_framework_envs.py
+# into .venvs/<framework>/ to keep dependency pins isolated from the T2 stack.
+t3 = ["smolagents==1.26.0", "openai"]
+t4 = ["openhands-sdk==1.44.1"]
+t5 = ["crewai==1.15.18"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"

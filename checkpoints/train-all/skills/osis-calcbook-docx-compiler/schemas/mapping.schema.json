@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mapping.schema.json",
+  "title": "calcbook mapping.json",
+  "description": "模板包唯一语义事实：Tag → 类型 → 数据源 → 可选格式。业务字段名一律来自 OSIS 数据结构（project_brief），本 Schema 不预定义任何业务键。",
+  "type": "object",
+  "required": [
+    "mapping_schema",
+    "standard_structure_version",
+    "standard_structure_sha256",
+    "template_sha256",
+    "slots"
+  ],
+  "properties": {
+    "mapping_schema": {
+      "const": 3,
+      "description": "mapping schema 版本（v3 = 统一 slots、全 Tag 化、表格整表重建；v4 = 标签内容化命名，去数字）"
+    },
+    "template_id": {
+      "type": "string",
+      "description": "模板标识（可读）"
+    },
+    "standard_structure_version": {
+      "type": "integer",
+      "description": "标准数据字典版本（standard_dict.STANDARD_STRUCTURE_VERSION）"
+    },
+    "standard_structure_sha256": {
+      "type": "string",
+      "description": "标准数据字典 sha（standard_dict.sha256）；字典变更需重新 compile"
+    },
+    "template_sha256": {
+      "type": "string",
+      "description": "包内 template.docx（写 Tag 成品）SHA-256，与 package.json.template_sha256 一致"
+    },
+    "prepared_template_sha256": {
+      "type": "string",
+      "description": "prepared-template.docx（写 Tag 前中间件）SHA-256，仅溯源用"
+    },
+    "source_template_sha256": {
+      "type": "string",
+      "description": "源模板（用户原始 DOCX）SHA-256；二次渲染按它自动检索模板包"
+    },
+    "slots": {
+      "type": "object",
+      "description": "Tag → 槽位定义。Tag 即 `【模块-内容】`（如 image-shear、profile-bridge-type；miss-* 为未决缺项）；同一 tag 可多处引用同一槽位，槽只定义一次",
+      "propertyNames": {
+        "pattern": "^(?:profile|model|table|check|image|list|seismic|miss)-[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/slot"
+      }
+    }
+  },
+  "$defs": {
+    "slot": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "text",
+            "format",
+            "conclusion",
+            "table",
+            "image"
+          ],
+          "description": "text=直接字段值；format=固定句式/列表；conclusion=验算结论；table=整表重建；image=图片本体与图名"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`field:xx` / `table:xx` / `image:xx` / `verdict:xx`；null=未映射(unresolved)，Render 标红"
+        },
+        "sources": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "format 类型：具名占位符 → source 映射",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "repeat_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "format 动态列表：`table:<brief真实键>` 或 `load_combinations`（_logfile.log 提取），不新增业务提取器"
+        },
+        "item_template": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "repeat 列表的单行句式，占位符与 item_sources 键一致"
+        },
+        "item_sources": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "repeat 列表行内取值：`column:<表列名>`（或 load_combinations 的字段键）",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "template": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "format 类型：固定句式，占位符 {snake_key} 与 sources 键一一对应"
+        },
+        "caption": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "image 类型：图题全文（定位/渲染用）"
+        },
+        "caption_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "image 类型：图题中模板图名字串，render 插图后替换为 OSIS 输出图名"
+        },
+        "verdict_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion 类型：控制值结论的验算行源 `verdict:验算表#行`（取 control/limit/unit）"
+        },
+        "basis": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion 类型：固定规范依据，由标准字典注入；模板公式与条文仍保持静态"
+        },
+        "source_desc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "可读说明（OSISAI 判断证据，render 不依赖）"
+        },
+        "ok_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion：验算满足(OK)时的纯文本"
+        },
+        "ng_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion：验算不满足(NG)时的纯文本"
+        },
+        "ok_template": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion：OK 句式，占位符仅允许 {verdict}{control}{limit}{unit}"
+        },
+        "ng_template": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "conclusion：NG 句式，占位符仅允许 {verdict}{control}{limit}{unit}"
+        },
+        "width_emu": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "image 类型：prepare 收集的旧图槽宽度（EMU）；无旧槽为 null → render 用正文宽度 85%"
+        },
+        "height_emu": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "image 类型：prepare 收集的旧图槽高度（EMU），仅参考（render 按当前图原始比例重算高度不写死）"
+        },
+        "style_xml": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "table 类型：compile 从原表提取的样式骨架（tblPr/tblGrid/表头行格式 XML 字符串），render 据此生成完整新表",
+          "properties": {
+            "tbl_pr": {
+              "type": "string"
+            },
+            "tbl_grid": {
+              "type": "string"
+            },
+            "header_row": {
+              "type": "string"
+            },
+            "data_row": {
+              "type": "string"
+            }
+          }
+        },
+        "occurrences": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "table/image 同一 Tag 多位置时的逐位置题注、样式和原模板宽度，按模板顺序排列",
+          "items": {
+            "type": "object",
+            "properties": {
+              "temp_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caption": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caption_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width_emu": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "height_emu": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "style_xml": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "text"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "format"
+            },
+            "source": {
+              "const": null
+            }
+          },
+          "required": [
+            "source"
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "format"
+            }
+          },
+          "required": [
+            "template"
+          ],
+          "not": {
+            "required": [
+              "repeat_source"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "format"
+            },
+            "repeat_source": {}
+          },
+          "required": [
+            "repeat_source",
+            "item_template"
+          ],
+          "not": {
+            "required": [
+              "template"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "conclusion"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "table"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "image"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    }
+  }
+}

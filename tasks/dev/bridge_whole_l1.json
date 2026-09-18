@@ -1,0 +1,23 @@
+{
+  "task_id": "cantilever_whole_l1_smoke",
+  "bridge_type": "cantilever_box",
+  "task_form": "whole",
+  "difficulty": "L1",
+  "natural_language_requirement": "建立一座悬臂现浇箱梁桥的基础 PYOSIS 模型，明确单位、几何、材料、截面、节点、单元、边界和基础荷载。",
+  "total_timeout_s": 5400,
+  "expected_fields": {
+    "units": true,
+    "geometry": true,
+    "material": true,
+    "section": true,
+    "node": true,
+    "element": true,
+    "boundary": true,
+    "loadcase": true
+  },
+  "metadata": {
+    "split": "dev",
+    "solver_required": false,
+    "purpose": "adapter-conformance"
+  }
+}

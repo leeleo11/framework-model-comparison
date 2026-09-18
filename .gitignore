@@ -1,0 +1,14 @@
+.venvs/
+.venv/
+runs/
+tmp/
+reports/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+configs/parent_repo.local.txt

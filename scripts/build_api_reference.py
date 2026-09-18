@@ -1,0 +1,157 @@
+"""Generate the API reference package from the runtime's own introspection.
+
+The skill bundle documents APIs in prose, and prose drifts — the 2026-09-10
+failures (``create_rect(no, name, h, b)`` vs the real 21-argument signature,
+``bLinear`` vs ``is_linear``) were both prose/runtime mismatches that pushed
+every architecture toward the same wrong calls.  This generator imports the
+INSTALLED pyosis under the parent venv, enumerates every public mutator on
+every manager class via ``inspect``, and writes each method's real signature
+and docstring into one markdown reference in the snapshot.  Content is
+machine truth for the exact runtime that executes the candidates — 100%
+coverage by construction (no doc index to miss entries).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+from pathlib import Path
+
+# Managers whose mutator surface matters for building models.  Post-processing
+# managers (post/result/display) are excluded: they concern result extraction,
+# not construction.
+_MANAGERS = (
+    "boundary", "control", "dynamic", "element", "geometry", "live",
+    "load", "material", "node", "project", "property", "section",
+    "settlement", "stability", "stage", "tendon", "thickness",
+)
+
+# Inspect the installed pyosis directly: enumerate managers -> methods ->
+# signature + docstring head.  Sub-managers (tendon.prop / tendon.shape /
+# live.grade / live.lane / live.case / element.group / boundary.group) are
+# covered by walking their types too — their methods are attributed back to
+# the parent manager with the child name (e.g. tendon.shape.create_arc3d).
+_REFLECT_PROBE = r"""
+import inspect, json
+
+def mutators(cls):
+    methods = {}
+    for name, fn in inspect.getmembers(cls, inspect.isfunction):
+        if name.startswith('_') or name == 'clear':
+            continue
+        if name == 'create' or name.startswith((
+                'create_', 'set_', 'add_', 'define_', 'delete_', 'update_')):
+            try:
+                sig = str(inspect.signature(fn))
+            except (ValueError, TypeError):
+                sig = '(...)'
+            doc = inspect.getdoc(fn) or ''
+            doc_head = "\n".join(doc.splitlines()[:40])
+            methods[name] = {"sig": sig, "doc": doc_head,
+                             "src": f"{inspect.getfile(fn)}:{(fn.__code__.co_firstlineno)}"}
+    return methods
+
+out = {}
+managers = ['boundary', 'control', 'dynamic', 'element', 'geometry', 'live',
+            'load', 'material', 'node', 'project', 'property', 'section',
+            'settlement', 'stability', 'stage', 'tendon', 'thickness']
+for name in managers:
+    try:
+        mod = __import__('pyosis.' + name + '.manager', fromlist=['x'])
+    except Exception:
+        continue
+    cls = next((c for n, c in vars(mod).items()
+                if isinstance(c, type) and n.endswith('Manager') and not n.startswith('Sub')), None)
+    if cls is None:
+        continue
+    entry = dict(mutators(cls))
+    # walk sub-manager attributes (tendon.prop, tendon.shape, live.grade, ...)
+    for attr, val in vars(cls).items():
+        if attr.startswith('_') or not isinstance(val, property):
+            continue
+        try:
+            inst = val.fget(cls.__new__(cls)) if False else None
+        except Exception:
+            inst = None
+    # discover sub-manager types defined in the same module
+    for sub_name, sub_cls in vars(mod).items():
+        if (isinstance(sub_cls, type) and sub_name.endswith('Manager')
+                and sub_cls is not cls and sub_name != 'SubManager'):
+            for method_name, info in mutators(sub_cls).items():
+                key = sub_name.replace('Manager', '').lower() + '.' + method_name
+                entry[key] = info
+    if entry:
+        out[name] = entry
+print(json.dumps(out))
+"""
+
+
+def reflect(python: str) -> dict:
+    """Run the reflection probe under the parent venv and return the tree."""
+
+    proc = subprocess.run(
+        [python, "-c", _REFLECT_PROBE],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300,
+    )
+    lines = (proc.stdout or "").strip().splitlines()
+    raw = lines[-1] if lines else "{}"
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"reflection failed (rc={proc.returncode}): "
+            f"{(proc.stderr or proc.stdout or '')[-500:]}"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=str, required=True,
+                        help="python whose site-packages hold the target pyosis")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+
+    tree = reflect(args.python)
+
+    lines = [
+        "# pyosis API 参考（由运行时反射自动生成，签名即当前安装版本的真值）",
+        "",
+        "<!-- generated by scripts/build_api_reference.py; do not edit by hand -->",
+        "",
+        "> 每个条目 = 运行时 `inspect` 反射的真实签名与 docstring。参数顺序、",
+        "> 默认值、前置条件以本文件为准；SKILL 正文里的简写表格与此冲突时，",
+        "> 以本文件为准。`create(TYPE, ...)` 字符串派发 ≡ 对应的 `create_<type 小写>`。",
+        "> 已知运行时限制：`Section.set_stress_point` 虽存在于 pyosis，但当前 OSIS 后端",
+        "> 不接受 StressPoint 命令（实测两版均返回空错误），调用必然失败——勿使用。",
+        "> 子管理器条目形如 `tendon.shape.create_arc3d`。",
+        "",
+    ]
+    total = 0
+    for manager in sorted(tree):
+        entry = tree[manager]
+        lines.append(f"## {manager}")
+        lines.append("")
+        for key in sorted(entry):
+            info = entry[key]
+            total += 1
+            lines.append(f"### {manager}.{key}")
+            lines.append("```text")
+            lines.append(f"signature: {info['sig']}")
+            if info["src"]:
+                lines.append(f"source: {info['src']}")
+            lines.append("")
+            if info["doc"]:
+                lines.append(info["doc"])
+            lines.append("```")
+            lines.append("")
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text("\n".join(lines), encoding="utf-8")
+    print(f"api_reference: {total} APIs -> {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

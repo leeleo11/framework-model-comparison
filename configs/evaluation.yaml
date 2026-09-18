@@ -1,0 +1,118 @@
+# OSIS-AI 评价配置
+# 读法:
+#   1) weights 段只列 system -> 权重;weight=0 跳过该系统
+#   2) 每个系统同名顶层段里放自己的详细配置;没写的字段用代码内默认值
+# CLI 只接受 --config / --reference / --candidate;其余全读这份 YAML。
+
+# ---- CLI 行为 ----
+runner:
+  output_dir: reports
+  file_name_template: ""     # 空 = CLI 默认 "<ref>_vs_<cand>_<timestamp>.json"
+  verbose: false             # false 只返 {system: overall_score},true 返完整 details
+
+# ---- 系统权重 ----
+# 顶层 weights 是 system -> 数字;weight=0 表示跳过。
+# 所有系统的 overall_score 都归一到 [0,1](各项最高分=1),runner 按权重加权求和。
+weights:
+  generic_text: 0.10        # 代码文本相似度(需 reference)
+  osis_text: 0.10           # OSIS 工程结构完整性(100% 自检,不依赖 ref)
+  python_syntax: 0.10       # candidate 全部 .py 的 py_compile 通过率(能编的比例)
+  model_conformance: 0.40   # 构造建模正确性(按桥型分发,意图参数由 resources 注入)
+  efficiency: 0.15          # 耗时(见 efficiency.scale)
+  cost: 0.15                # token 消耗(见 cost.scale.total_tokens)
+
+
+# ---- 系统详细配置 ----
+# 同名段:weights 里出现过的系统,可以在自己同名段里写详细参数。
+# 没写就全用代码默认。
+
+generic_text:
+  # 当前用模块默认;无私有配置项
+  {}
+
+# Python 源码能编译通过率:扫描 candidate 所有 .py 文件,统计能 py_compile 的比例。
+python_syntax:
+  # 无私有配置;默认编译 candidate 下所有 .py
+  {}
+
+# 构造建模正确性:按桥型分发(cantilever_box / rigid_frame → MD 五维;
+# t_girder / precast_small_box / cast_in_place_box / hollow_slab → 简支简化五维)。
+# overall_score 归一到 [0,1]:无 reference 时 = 五维总分/5;有 reference 时 = 候选分/参考分(上界 1)。
+#
+# 本系统 **不读 yaml 私有配置**,也不从目录名推断桥型 —— 意图参数由调用方经
+# resources 注入(训练时来自数据集画像 X;CLI eval 见 --bridge-type / --expected-l):
+#   resources["bridge_type"]   str   必填(缺失则 skipped)
+#   resources["expected_L"]    float 设计主跨(ground truth)
+#   resources["is_continuous"] bool  简支变连续 vs 简支(可选,默认按阶段数≥4 兜底)
+model_conformance:
+  {}
+
+# OSIS 工程结构完整性:required_files + main_sequence + module_apis + internal_weights
+# 全部按 weight 归一化;不依赖 reference。
+# OSIS 工程结构完整性:required_files + main_sequence + module_apis + internal_weights
+# 全部按 weight 归一化;不依赖 reference。
+#
+# modules 是单一真源:加 / 删 / 改名一个模块只动这一处,required_files /
+# expected_functions / main_sequence / module_apis 全由它推导(见 osis_text.py)。
+# 每项字段:
+#   path     必填 —— 相对工程根的 py 路径
+#   function 可选 —— 该模块应定义的入口函数(setup_control / build_X);有它才进
+#                   expected_functions + main_sequence(按列表顺序)
+#   apis     可选 —— 该模块必须命中的 engine API pattern(字符串=精确,"re:..."=正则)
+#                   命中列表任一条即过;正则全名匹配,避免误判未来的 create_*
+osis_text:
+  main_file: prep/main.py           # main.py 现在统一在 prep/ 下
+  main_entry_function: main         # 入口函数名(模板用 main(),非 build_model)
+
+  modules:
+    - path: prep/_0_engine.py       # 仅要求存在(模块级 engine 单例)
+    - path: prep/_1_control.py
+      function: setup_control
+      apis: [re:^engine\.control\.set_\w+$]
+    - path: prep/_2_property.py
+      function: build_property
+      apis: [re:^engine\.geometry\.create\w*$]
+    - path: prep/_3_material.py
+      function: build_materials
+      apis: [re:^engine\.material\.create\w*$]
+    - path: prep/_4_section.py
+      function: build_sections
+      apis: [re:^engine\.section\.create\w*$]
+    - path: prep/_5_node.py
+      function: build_nodes
+      apis: [re:^engine\.node\.create\w*$]
+    - path: prep/_6_element.py
+      function: build_elements
+      apis: [re:^engine\.element\.create\w*$]
+    - path: prep/_7_boundary.py
+      function: build_boundaries
+      apis: [re:^engine\.boundary\.create\w*$]
+    - path: prep/_8_loadcase.py
+      function: build_loadcases
+      apis: [re:^engine\.load\.create\w*$]
+    - path: prep/_9_analysis.py
+      function: build_analysis
+      apis:
+        - re:^engine\.settlement\.create\w*$
+        - re:^engine\.live\.create\w*$
+    - path: prep/_10_stage.py
+      function: build_stages
+      apis: [re:^engine\.stage\.create\w*$]
+
+  internal_weights:      # osis_text 内部子检查的权重(归一化到 1)
+    required_files: 0.30
+    expected_functions: 0.30
+    main_sequence: 0.25
+    module_apis: 0.15
+
+# 耗时:score = 1 / (1 + value / scale);scale 是分数 = 0.5 时的原始值
+efficiency:
+  scale:
+    duration_s: 240.0     # 240s 时分数 = 0.5
+
+# token 消耗:不分 input/output/cache,用 opencode 返回的总 token 数
+# 细分 token 在 report 详情里展示(给监控看),不影响计算指标。
+cost:
+  metric: total_tokens       # 唯一计算指标
+  scale:
+    total_tokens: 100000      # 100k 总 token 时分数 = 0.5

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["project_dir", "built_at", "facts", "tables", "images"],
+  "properties": {
+    "project_dir": {
+      "type": "string",
+      "description": "项目根目录"
+    },
+    "built_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "构建时间"
+    },
+    "facts": {
+      "type": "object",
+      "description": "标量事实（键值对）",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value", "source", "status"],
+        "properties": {
+          "value": {
+            "description": "事实值（任意类型）"
+          },
+          "source": {
+            "type": "string",
+            "description": "数据来源：project_profile / osis_model / osis_check"
+          },
+          "status": {
+            "enum": ["confirmed", "conflict", "missing"],
+            "description": "状态"
+          }
+        }
+      }
+    },
+    "tables": {
+      "type": "object",
+      "description": "表格数据引用",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["source", "header", "row_count"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "数据来源标识"
+          },
+          "header": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "表头列名"
+          },
+          "row_count": {
+            "type": "integer",
+            "description": "数据行数"
+          },
+          "path": {
+            "type": "string",
+            "description": "相对于项目目录的 JSON 文件路径"
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "object",
+      "description": "图片引用",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["source", "path", "exists"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "数据来源标识"
+          },
+          "path": {
+            "type": "string",
+            "description": "相对于项目目录的图片路径"
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "文件是否存在"
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string"},
+          "profile_value": {},
+          "osis_value": {},
+          "message": {"type": "string"}
+        }
+      },
+      "description": "数据冲突列表"
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string"},
+          "source": {"type": "string"},
+          "message": {"type": "string"}
+        }
+      },
+      "description": "缺失数据列表"
+    },
+    "seismic_flag": {
+      "type": ["boolean", "null"],
+      "description": "抗震验算标志：true=抗震，false=非抗震，null=未声明"
+    }
+  }
+}

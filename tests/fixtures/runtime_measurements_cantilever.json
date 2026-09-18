@@ -1,0 +1,56 @@
+{
+  "schema_version": "osis-runtime-measurements-v1",
+  "status": "available",
+  "summary": {
+    "nodes": 4,
+    "elements": 3,
+    "sections": 2,
+    "materials": 1,
+    "boundaries": 4,
+    "stages": 4
+  },
+  "nodes": [
+    {"no": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+    {"no": 2, "x": 65.0, "y": 0.0, "z": 0.0},
+    {"no": 3, "x": 185.0, "y": 0.0, "z": 0.0},
+    {"no": 4, "x": 250.0, "y": 0.0, "z": 0.0}
+  ],
+  "elements": [
+    {"no": 1, "element_type": "BEAM3D", "node_vec": [1, 2], "sec_vec": [1, 1]},
+    {"no": 2, "element_type": "BEAM3D", "node_vec": [2, 3], "sec_vec": [1, 2]},
+    {"no": 3, "element_type": "BEAM3D", "node_vec": [3, 4], "sec_vec": [2, 2]}
+  ],
+  "sections": [
+    {
+      "no": 1,
+      "name": "支点截面",
+      "section_type": "CONVENTIONALBOX",
+      "height": 7.5,
+      "prop": {"BtL": 6.0, "BtR": 6.0, "BbL": 3.0, "BbR": 3.0, "Tt": 0.3, "Tb": 0.5, "Tw1": 0.6, "Tw2": 0.6, "BcL": 2.0, "BcR": 2.0, "TcL": 0.2, "TcR": 0.2}
+    },
+    {
+      "no": 2,
+      "name": "跨中截面",
+      "section_type": "CONVENTIONALBOX",
+      "height": 3.2,
+      "prop": {"BtL": 6.0, "BtR": 6.0, "BbL": 3.0, "BbR": 3.0, "Tt": 0.28, "Tb": 0.32, "Tw1": 0.5, "Tw2": 0.5, "BcL": 2.0, "BcR": 2.0, "TcL": 0.2, "TcR": 0.2}
+    }
+  ],
+  "materials": [
+    {"no": 1, "name": "主梁混凝土", "material_type": "CONC", "grade": "C60"}
+  ],
+  "boundaries": [
+    {"no": 1, "boundary_type": "GENERAL", "entity_vec": [1]},
+    {"no": 2, "boundary_type": "GENERAL", "entity_vec": [2]},
+    {"no": 3, "boundary_type": "GENERAL", "entity_vec": [3]},
+    {"no": 4, "boundary_type": "GENERAL", "entity_vec": [4]}
+  ],
+  "stages": [
+    {"no": 1, "name": "悬臂施工"},
+    {"no": 2, "name": "合龙"},
+    {"no": 3, "name": "二期恒载"},
+    {"no": 4, "name": "运营"}
+  ],
+  "element_groups": [],
+  "loadcases": []
+}

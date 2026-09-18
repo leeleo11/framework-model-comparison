@@ -1,0 +1,13 @@
+# OSIS skill repository (the "parent repo") this framework reads datasets,
+# skills and the PyOSIS toolchain from.
+#
+# The framework is a SIBLING of this repository, not a child of it, so the
+# location cannot be derived from where this framework sits on disk.  Record
+# it here, or override per-run with --parent-repo / OSIS_PARENT_REPO.
+#
+# Read by common/paths.py (first non-comment line wins).
+#
+# Leave this file portable in the repository.  For a local checkout either:
+#   - set OSIS_PARENT_REPO, or
+#   - replace the placeholder below in an uncommitted local copy.
+<path-to-osis-skill-enhance-main>
