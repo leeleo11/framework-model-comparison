@@ -21,9 +21,9 @@ Framework pins come from ``common/adapters.py`` (single source of truth):
 
 Usage::
 
-    python scripts/setup_framework_envs.py            # create venvs + install + verify
-    python scripts/setup_framework_envs.py --only t3  # one framework
-    python scripts/setup_framework_envs.py --dry-run  # show plan
+    uv run python scripts/setup_framework_envs.py            # create venvs + install + verify
+    uv run python scripts/setup_framework_envs.py --only t3  # one framework
+    uv run python scripts/setup_framework_envs.py --dry-run  # show plan
 """
 
 from __future__ import annotations

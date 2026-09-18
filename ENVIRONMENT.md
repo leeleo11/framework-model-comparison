@@ -1,5 +1,9 @@
 # 复现环境搭建指南
 
+本文件是 [`README.md`](README.md) 的详细补充。README 给出最短的安装和运行路径；本文件说明
+双 Python 环境、T6 的外部依赖、Windows 限制、评分运行时和常见故障。若两者的命令出现差异，
+以仓库当前脚本和 README 的 quick start 为准，并优先使用下面的 `uv run` 入口。
+
 本指南面向**拿到源码仓库、要在一台干净机器上重建实验环境的人**。目标是让六个架构
 （T1–T6）能在同一台机器上跑出与论文口径一致的结果。
 
@@ -57,8 +61,10 @@ T6 侧（pyosis / opencode_client）生态在 3.11。
 
 > **没有这两样时能做到什么**：环境能装好、测试能跑过、`full` 的**静态分**链路能复现；但 PyOSIS 执行与"构造正确性"维度、以及 T6 的全部能力都无法复现。论文口径里必须写清这一条。
 
-> **注意**：任何框架脚本都**不调用 `uv`**（在 `scripts/` 与 `common/` 下 grep `uv sync|uv pip|uv run`
-> 为 0 命中）。uv 只用来准备解释器，`--base-python` 必须指向一个真实存在的 `python.exe`。
+> **注意**：本仓库的环境脚本会直接调用 `uv venv` 和 `uv pip` 创建、安装 T1–T5 的隔离环境；
+> 项目自身的命令统一通过 `uv run` 启动。`--base-python` 仍必须指向一个真实存在的
+> `python.exe`，通常使用 `uv python find 3.13` 得到它。T6 的父仓库环境单独在父仓库中用
+> `uv sync` 创建。
 
 ---
 
@@ -91,7 +97,7 @@ cd ..\osis-framework-comparison-runtime
 ```powershell
 cd <父目录>\osis-framework-comparison-runtime
 $py = uv python find 3.13
-python scripts\setup_framework_envs.py --base-python $py
+uv run python scripts\setup_framework_envs.py --base-python $py
 ```
 
 装出来的东西（`common\adapters.py` 是版本权威来源）：
@@ -104,10 +110,6 @@ t5    crewai==1.15.18
 ```
 
 可选参数：`--only {main,t3,t4,t5}`、`--dry-run`。
-
-> ⚠️ **已发布的 README 里这条命令是错的。** 它写的是
-> `setup_framework_envs.py --parent-repo ..\osis-skill-enhance-main`，
-> 但该脚本**没有 `--parent-repo` 参数**，会以 `unrecognized arguments` 失败。按本节的写法。
 
 产出 `.venvs\environments.json`，记录每个环境的 `packages` / `python` / `version` / `status`。
 **这是校验自己装得对不对的凭据，别删。**（`version` 字段是尽力探测，探测不到时值为字符串
@@ -132,7 +134,7 @@ uv sync
 
 ```powershell
 cd <父目录>\osis-framework-comparison-runtime
-python scripts\build_train_all_snapshot.py
+uv run python scripts\build_train_all_snapshot.py
 ```
 
 默认输出 `<框架目录>\checkpoints\train-all\`。读取父仓库的 `.agents\skills` 与 `configs\datasets.yaml`，
@@ -182,7 +184,7 @@ P0–P3 只是 `timeout_stage` 的阶段标注，不约束生成预算。
 ### 8.1 确认父仓库解析正确
 
 ```powershell
-python -c "from common.paths import resolve_parent_repo; print(resolve_parent_repo())"
+uv run python -c "from common.paths import resolve_parent_repo; print(resolve_parent_repo())"
 ```
 
 解析顺序（代码实现，**优先于 README 的描述**）：
@@ -198,7 +200,7 @@ python -c "from common.paths import resolve_parent_repo; print(resolve_parent_re
 ### 8.2 跑测试
 
 ```powershell
-.\.venvs\main\Scripts\python.exe -m pytest -q
+uv run pytest -q
 ```
 
 应全部通过。
@@ -215,7 +217,7 @@ python -c "from common.paths import resolve_parent_repo; print(resolve_parent_re
 
 ```powershell
 cd <父目录>\osis-framework-comparison-runtime
-.\.venvs\main\Scripts\python.exe scripts\run_dataset.py `
+uv run python scripts\run_dataset.py `
   --architecture T1 `
   --bridge osis-bridge-cantilever-box `
   --form full --index 0 --seed 0 `
@@ -233,7 +235,7 @@ cd <父目录>\osis-framework-comparison-runtime
 单条：
 
 ```powershell
-.\.venvs\main\Scripts\python.exe scripts\run_dataset.py `
+uv run python scripts\run_dataset.py `
   --architecture T2 --bridge osis-bridge-cantilever-box `
   --form full --index 0 --seed 0 `
   --parent-repo ..\osis-skill-enhance-main `
@@ -244,7 +246,7 @@ cd <父目录>\osis-framework-comparison-runtime
 
 ```powershell
 $env:OSIS_MODEL_API_KEY = '<你的密钥>'
-.\.venvs\main\Scripts\python.exe scripts\run_campaign.py `
+uv run python scripts\run_campaign.py `
   --label formal-YYYYMMDD `
   --auto-forms --resume `
   --parent-repo ..\osis-skill-enhance-main `
@@ -288,7 +290,7 @@ T6 的原生会话在自己的沙箱里跑 pyosis，任何锁都盖不住。一�
 
 | 症状 | 原因 | 处理 |
 |---|---|---|
-| `unrecognized arguments: --parent-repo` | 已发布 README 里 `setup_framework_envs.py` 的命令写错了 | 按第 3 节不带该参数执行 |
+| `unrecognized arguments: --parent-repo` | 把父仓库参数传给了只负责建 T1–T5 环境的脚本 | 从 `setup_framework_envs.py` 命令中移除该参数；父仓库通过 `OSIS_PARENT_REPO`、配置文件或运行命令的 `--parent-repo` 指定 |
 | T6 报 `framework_env_missing` | 父仓库的 `.venv` 没建 | 回第 4 节 `uv sync` |
 | 运行立刻退出，`{"leakage_guard": "failed"}` | 泄漏门禁拦下 | 看 `runs\<...>\leakage_guard_failures\<task>.json` 的 `checks` 字段定位是哪一项 |
 | `FileExistsError: [WinError 183]` | 直接调 `run_dataset.py` 时目标 run 目录已存在（`run_campaign` 会自动归档，单条命令不会） | 先把旧目录移走 |

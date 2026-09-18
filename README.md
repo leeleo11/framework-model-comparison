@@ -26,6 +26,9 @@ T1–T5 的区别只在编排框架，T6 使用 OSIS 原生编排。任务、技
 - T6 所需的父仓库 `.venv`、PyOSIS 和 OSIS 求解器；
 - 可访问模型网关的 API key。
 
+如果需要了解双 Python 环境、T6 的外部安装件、Windows 进程限制和故障排查，请继续阅读
+[`ENVIRONMENT.md`](ENVIRONMENT.md)；它是本 README 的详细环境补充。
+
 本仓库使用 `pyproject.toml`、`uv.lock` 和 `.python-version` 管理 Python 依赖。虚拟环境只在本机创建，不提交到 Git。
 
 ## 从零安装
