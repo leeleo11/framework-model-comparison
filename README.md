@@ -137,7 +137,7 @@ uv run python scripts/run_dataset.py `
 | T1 | direct one-shot | `.venvs/main` |
 | T2 | LangGraph / LangChain | `.venvs/main` |
 | T3 | smolagents CodeAct | `.venvs/t3` |
-| T4 | OpenHands CodeAct | `.venvs/t4` |
+| T4 | OpenHands 原生 AgentSkills + CodeAct | `.venvs/t4` |
 | T5 | CrewAI 角色协作 | `.venvs/t5` |
 | T6 | OSIS 原生路由 | 父仓库 `.venv` 和 OSIS 工具链 |
 

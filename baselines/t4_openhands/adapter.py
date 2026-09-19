@@ -15,6 +15,7 @@ spec string and the instance needs a concrete ``.executor``.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import time
@@ -27,7 +28,6 @@ os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 from baselines._framework_common import (
     resolve_max_steps, resolve_max_tokens,
     search_knowledge as _knowledge_search_shared,  # noqa: E402
-    build_prompt,
     candidate_root,
     check_project_completeness,
     finish,
@@ -35,50 +35,127 @@ from baselines._framework_common import (
     load_request,
     normalize_tokens,
     read_candidate_file,
-    reference_cases_payload,
-    search_skill_cases,
-    skill_index_payload,
 )
+from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 from common.tool_policy import tool_error
 
 _STATE: dict[str, Any] = {}
 
+T4_CUSTOM_TOOL_NAMES = (
+    "read_skill_reference",
+    "list_reference_files",
+    "search_knowledge",
+    "list_candidate_files",
+    "read_candidate_file",
+    "write_file",
+    "check_python_syntax",
+    "check_project_completeness",
+)
 
-def _conversation_metrics(events: Any) -> dict[str, Any]:
-    """Extract model/tool counters from the OpenHands event log.
 
-    OpenHands can emit several events for one response (for example one
-    ``ActionEvent`` per parallel tool call).  Distinct ``llm_response_id``
-    values therefore represent model calls, while ActionEvents represent
-    tool calls.  The fallback counts agent message events for SDK versions
-    that omit response ids.
-    """
-
+def summarize_events(events: Any) -> dict[str, Any]:
+    """Build a content-free audit trace and native-skill usage counters."""
     items = list(events or [])
-    action_events = []
     response_ids: set[str] = set()
     fallback_model_calls = 0
-    for event in items:
+    tool_calls = 0
+    tool_call_counts: dict[str, int] = {}
+    native_skills: list[str] = []
+    trace: list[dict[str, Any]] = []
+    for index, event in enumerate(items):
         class_name = type(event).__name__
+        tool_name = str(getattr(event, "tool_name", None) or "")
         if class_name == "ActionEvent" or (
             hasattr(event, "tool_call") and hasattr(event, "tool_name")
         ):
-            action_events.append(event)
+            tool_calls += 1
+            key = tool_name or "unknown"
+            tool_call_counts[key] = tool_call_counts.get(key, 0) + 1
         response_id = getattr(event, "llm_response_id", None)
         if response_id:
             response_ids.add(str(response_id))
         elif class_name == "MessageEvent" and getattr(event, "source", None) == "agent":
             fallback_model_calls += 1
+        skill_name = ""
+        if tool_name.casefold() in {"invokeskilltool", "invoke_skill"}:
+            skill_name = str(getattr(getattr(event, "action", None), "name", "") or "")
+            if skill_name and skill_name not in native_skills:
+                native_skills.append(skill_name)
+        activated = [str(name) for name in (getattr(event, "activated_skills", None) or [])]
+        for name in activated:
+            if name and name not in native_skills:
+                native_skills.append(name)
+        trace.append(
+            {
+                "event_index": index,
+                "event_type": class_name,
+                "event_id": str(getattr(event, "id", "") or ""),
+                "timestamp": str(getattr(event, "timestamp", "") or ""),
+                "source": str(getattr(event, "source", "") or ""),
+                "llm_response_id": str(response_id or ""),
+                "tool_name": tool_name,
+                "tool_call_id": str(getattr(event, "tool_call_id", "") or ""),
+                "skill_name": skill_name,
+                "activated_skills": activated,
+            }
+        )
     model_calls = len(response_ids) or fallback_model_calls
-    if model_calls == 0 and action_events:
-        # A very old event type may not expose an id; all actions can still be
-        # attributed to at least one model response.
+    if model_calls == 0 and tool_calls:
         model_calls = 1
     return {
         "framework_steps": len(items),
         "model_calls": model_calls,
-        "tool_calls": len(action_events),
+        "tool_calls": tool_calls,
+        "tool_call_counts": tool_call_counts,
+        "native_skill_invocations": native_skills,
+        "trace": trace,
     }
+
+
+def _conversation_metrics(events: Any) -> dict[str, Any]:
+    """Compatibility wrapper retained for existing callers and tests."""
+    summary = summarize_events(events)
+    return {
+        key: summary[key]
+        for key in ("framework_steps", "model_calls", "tool_calls")
+    }
+
+
+def write_event_trace(workspace: Path, trace: list[dict[str, Any]]) -> Path:
+    path = Path(workspace) / "t4_events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as stream:
+        for event in trace:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return path
+
+
+def build_t4_prompt(request: dict[str, Any]) -> str:
+    """Concise hand-off that lets OpenHands perform native skill routing."""
+    task_json = json.dumps(request["task"], ensure_ascii=False, indent=2)
+    expected = [
+        "py/项目画像.md",
+        *[f"py/prep/{name}" for name in CANONICAL_PROJECT_FILES[1:]],
+    ]
+    file_list = "\n".join(f"- {path}" for path in expected)
+    return f"""You are T4, the OpenHands native-skills architecture.
+
+Use the native invoke_skill tool (OpenHands InvokeSkillTool) first to load the relevant bridge and OSIS skills from
+the native <available_skills> catalog. Do not reconstruct skill bodies from
+an injected inventory. Read only the references needed for this task.
+
+Task:
+{task_json}
+
+Candidate contract:
+{file_list}
+
+Work progressively: invoke skill -> inspect candidate/reference -> write a
+small coherent batch -> inspect it. Use check_python_syntax, then
+check_project_completeness before FinishTool. Write real executable PYOSIS
+code, never placeholders. In the final answer list the files written and any
+remaining risk.
+"""
 
 
 def _load_native_skills(skills_dir: Path, loader=None) -> list[Any]:
@@ -110,17 +187,6 @@ def _package_version(name: str) -> str:
         return "unavailable"
 
 
-def _list_skills() -> str:
-    return json.dumps(_STATE["skill_reader"].skill_index(), ensure_ascii=False)
-
-
-def _read_skill(skill_id: str) -> str:
-    try:
-        return _STATE["skill_reader"].read_skill(skill_id)
-    except Exception as exc:  # noqa: BLE001
-        return f"TOOL_ERROR: {type(exc).__name__}: {exc}"
-
-
 def _read_skill_reference(skill_id: str, relative_path: str) -> str:
     try:
         return _STATE["skill_reader"].read_reference(skill_id, relative_path)
@@ -141,11 +207,6 @@ def _write_file(relative_path: str, content: str) -> str:
         return tool_error(exc)
 
 
-def _search_cases(query: str) -> str:
-    return search_skill_cases(_STATE["skill_reader"], query)
-
-
-
 def _search_knowledge(query: str) -> str:
     return _knowledge_search_shared(query)
 
@@ -155,6 +216,34 @@ def _list_reference_files(skill_id: str, template_name: str) -> str:
 
 def _read_candidate(relative_path: str) -> str:
     return read_candidate_file(_STATE["candidate_root"], relative_path)
+
+
+def _list_candidate_files() -> str:
+    try:
+        root: Path = _STATE["candidate_root"]
+        files = sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+        return json.dumps(files, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001
+        return tool_error(exc)
+
+
+def _check_python_syntax() -> str:
+    root: Path = _STATE["candidate_root"]
+    failures: dict[str, str] = {}
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+        except (SyntaxError, UnicodeError) as exc:
+            failures[relative] = str(exc).replace(str(root), "<candidate>")
+    return json.dumps(
+        {"ok": not failures, "checked": len(list(root.rglob("*.py"))), "failures": failures},
+        ensure_ascii=False,
+    )
 
 
 def _check_completeness() -> str:
@@ -197,6 +286,31 @@ def _expose(name: str, description: str, props: dict, required: list, fn) -> Any
     return Tool(name=name)
 
 
+def _build_custom_tools() -> list[Any]:
+    """Register only candidate/reference tools; skills stay SDK-native."""
+    return [
+        _expose("read_skill_reference", "Read one reference file inside a skill directory.",
+                {"skill_id": {"type": "string"}, "relative_path": {"type": "string"}},
+                ["skill_id", "relative_path"], _read_skill_reference),
+        _expose("list_reference_files", "List the exact files inside one reference-case template.",
+                {"skill_id": {"type": "string"}, "template_name": {"type": "string"}},
+                ["skill_id", "template_name"], _list_reference_files),
+        _expose("search_knowledge", "Search the OSIS/pyosis knowledge base for an API signature or usage detail. Prefer this before guessing an API.",
+                {"query": {"type": "string"}}, ["query"], _search_knowledge),
+        _expose("list_candidate_files", "List files already present in the candidate project.",
+                {}, [], _list_candidate_files),
+        _expose("read_candidate_file", "Read a file the agent wrote into the candidate project.",
+                {"relative_path": {"type": "string"}}, ["relative_path"], _read_candidate),
+        _expose("write_file", "Write UTF-8 text to a candidate project file.",
+                {"relative_path": {"type": "string"}, "content": {"type": "string"}},
+                ["relative_path", "content"], _write_file),
+        _expose("check_python_syntax", "Parse every candidate Python file and report syntax errors.",
+                {}, [], _check_python_syntax),
+        _expose("check_project_completeness", "Report which canonical files are still missing.", {},
+                [], _check_completeness),
+    ]
+
+
 def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     from openhands.sdk import Agent, AgentContext, Conversation, LLM
@@ -208,28 +322,7 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
     _STATE["candidate_root"] = candidate_root(request)
     native_skills = _load_native_skills(Path(request["skills_dir"]))
 
-    tools = [
-        _expose("list_skills", "List available skill ids.", {}, [], _list_skills),
-        _expose("read_skill", "Read one skill's SKILL.md by id.",
-                {"skill_id": {"type": "string"}}, ["skill_id"], _read_skill),
-        _expose("read_skill_reference", "Read one reference file inside a skill directory.",
-                {"skill_id": {"type": "string"}, "relative_path": {"type": "string"}},
-                ["skill_id", "relative_path"], _read_skill_reference),
-        _expose("write_file", "Write UTF-8 text to a candidate project file.",
-                {"relative_path": {"type": "string"}, "content": {"type": "string"}},
-                ["relative_path", "content"], _write_file),
-        _expose("search_skill_cases", "Search every skill's markdown for a keyword.",
-                {"query": {"type": "string"}}, ["query"], _search_cases),
-        _expose("search_knowledge", "Search the OSIS/pyosis knowledge base (Weknora) for API signatures, parameter semantics, usage examples and error fixes. Prefer this before guessing an API.",
-                {"query": {"type": "string"}}, ["query"], _search_knowledge),
-        _expose("list_reference_files", "List the exact files inside one reference-case template.",
-                {"skill_id": {"type": "string"}, "template_name": {"type": "string"}},
-                ["skill_id", "template_name"], _list_reference_files),
-        _expose("read_candidate_file", "Read a file the agent wrote into the candidate project.",
-                {"relative_path": {"type": "string"}}, ["relative_path"], _read_candidate),
-        _expose("check_project_completeness", "Report which canonical files are still missing.", {},
-                [], _check_completeness),
-    ]
+    tools = _build_custom_tools()
     llm = LLM(
         model=f"openai/{request['model']}",
         base_url=request["base_url"],
@@ -274,15 +367,16 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
             "alternating_pattern": 40,
         },
     )
-    prompt = build_prompt(request, skill_index_payload(request["skills_dir"]),
-                          reference_cases_payload(request["skills_dir"]))
+    prompt = build_t4_prompt(request)
     meta: dict[str, Any] = {
         "architecture_id": "T4",
         "framework": "openhands",
         "framework_version": _package_version("openhands-sdk"),
         "model": request["model"],
-        "skill_loading": "openhands_native",
+        "skill_loading": "openhands_native_progressive_v2",
         "native_skill_count": len(native_skills),
+        "native_prompt_chars": len(prompt),
+        "custom_tools": list(T4_CUSTOM_TOOL_NAMES),
         "model_calls": 0,
         "tool_calls": 0,
         "framework_steps": 0,
@@ -293,8 +387,12 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         conversation.run()
         status = str(getattr(conversation.state, "execution_status", ""))
         meta["execution_status"] = status
-        meta.update(_conversation_metrics(getattr(conversation.state, "events", [])))
-        meta["final_answer"] = (get_agent_final_response(list(conversation.state.events)) or "")[:2000]
+        events = list(getattr(conversation.state, "events", []) or [])
+        event_summary = summarize_events(events)
+        trace = event_summary.pop("trace")
+        meta.update(event_summary)
+        meta["event_trace"] = write_event_trace(Path(request["workspace"]), trace).name
+        meta["final_answer"] = (get_agent_final_response(events) or "")[:2000]
         # STUCK / ERROR mean the session did not reach a finishing state.
         if "STUCK" in status or "ERROR" in status:
             meta["status"] = "failed"
@@ -303,7 +401,6 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         else:
             meta["status"] = "completed"
             meta["stop_reason"] = status.lower() or "completed"
-        conversation.close()
         # best-effort unified token extraction
         try:
             stats = getattr(conversation, "conversation_stats", None) or getattr(
@@ -322,6 +419,11 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         meta["error_type"] = type(exc).__name__
         meta["error"] = str(exc)[:500]
         meta["stop_reason"] = "error"
+    finally:
+        try:
+            conversation.close()
+        except Exception:  # noqa: BLE001 - preserve the generation result
+            pass
     return finish(Path(request["workspace"]), "T4", meta, started)
 
 
@@ -340,7 +442,7 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         "framework": "openhands",
         "framework_version": _package_version("openhands-sdk"),
         "model": request.get("model"),
-        "skill_loading": "openhands_native",
+        "skill_loading": "openhands_native_progressive_v2",
         "native_skill_count": 0,
         "model_calls": 0,
         "tool_calls": 0,

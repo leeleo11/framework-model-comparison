@@ -13,4 +13,4 @@ generate(task, skill_reader, workspace) -> workspace / "candidate_project"
 3. 最终提交 `candidate_project/py/prep/` 标准工程，不写评分、求解或 `runs/` 结果；
 4. 生成层结束后由 `common.runner.ExperimentRunner` 统一物化、执行和评分。
 
-框架之间只比较编排方式（one-shot、ReAct、CodeAct、角色协作、OSIS 原生路由）。技能内容、PyOSIS 环境、CLI 评分器、任务限时和输出契约保持不变。
+框架之间只比较编排方式（one-shot、ReAct、CodeAct、角色协作、OSIS 原生路由）。技能内容、PyOSIS 环境、CLI 评分器、任务限时和输出契约保持不变。T4 通过 OpenHands 原生 `AgentContext` 和 `invoke_skill` 使用技能，候选与参考工具只补足文件访问能力，不再提供通用 `read_skill` 旁路。
