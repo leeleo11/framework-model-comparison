@@ -98,7 +98,12 @@ def test_t2_generate_runs_langgraph_react_and_writes_candidate(
                         ],
                     }
                 }
-            ]
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
         },
         {
             "choices": [
@@ -108,7 +113,12 @@ def test_t2_generate_runs_langgraph_react_and_writes_candidate(
                         "content": "Candidate project written.",
                     }
                 }
-            ]
+            ],
+            "usage": {
+                "prompt_tokens": 140,
+                "completion_tokens": 8,
+                "total_tokens": 148,
+            },
         },
     ]
 
@@ -149,6 +159,13 @@ def test_t2_generate_runs_langgraph_react_and_writes_candidate(
     assert metadata["status"] == "completed"
     assert metadata["model"] == "deepseek-v4.1-flash-expires-on-0910"
     assert metadata["tool_calls"] == 1
+    assert metadata["tokens"] == {
+        "input_tokens": 240,
+        "output_tokens": 28,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_tokens": 268,
+    }
     assert len(calls) == 2
     assert calls[0][1]["json"]["model"] == "deepseek-v4.1-flash-expires-on-0910"
     assert "test-key" not in (workspace / "t2_generation.json").read_text(encoding="utf-8")

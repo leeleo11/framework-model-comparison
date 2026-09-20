@@ -227,6 +227,15 @@ def reference_cases_payload(skills_dir: str) -> str:
     return json.dumps(detailed, ensure_ascii=False, indent=2)
 
 
+TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "total_tokens",
+)
+
+
 def normalize_tokens(raw: Any) -> dict[str, int]:
     """Normalize any framework's token report into the unified 5-field shape.
 
@@ -278,6 +287,20 @@ def normalize_tokens(raw: Any) -> dict[str, int]:
         "cache_read_tokens": int(cache_read_tokens or 0),
         "total_tokens": int(total or 0),
     }
+
+
+def merge_token_usage(*reports: Any) -> dict[str, int]:
+    """Add independent token reports while preserving an unknown value."""
+
+    merged = {field: 0 for field in TOKEN_FIELDS}
+    found = False
+    for report in reports:
+        normalized = normalize_tokens(report)
+        if any(normalized.values()):
+            found = True
+            for field in TOKEN_FIELDS:
+                merged[field] += normalized[field]
+    return merged if found else {}
 
 
 def search_skill_cases(skill_reader: Any, query: str) -> str:

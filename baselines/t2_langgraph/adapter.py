@@ -38,6 +38,7 @@ from common.task_schema import TaskSpec
 from common.tool_policy import tool_error
 from baselines._framework_common import (
     check_project_completeness as _check_completeness_shared,
+    merge_token_usage,
     search_knowledge as _knowledge_search_shared,
     list_reference_files as _list_reference_files_shared,
 )
@@ -75,7 +76,6 @@ class T2Config:
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S
     reasoning_effort: str | None = None
     max_steps: int = DEFAULT_MAX_STEPS
-    reasoning_effort: str | None = None
 
     @classmethod
     def from_env(
@@ -540,6 +540,16 @@ def _transcript_digest(text: str) -> dict[str, Any]:
     }
 
 
+def _message_token_usage(message: BaseMessage) -> dict[str, int]:
+    """Read usage from LangChain's normalized or provider metadata."""
+
+    usage = getattr(message, "usage_metadata", None)
+    response = getattr(message, "response_metadata", None)
+    if not usage and isinstance(response, dict):
+        usage = response.get("token_usage") or response.get("usage")
+    return merge_token_usage(usage)
+
+
 class _TranscriptWriter:
     """Append-only JSONL recorder for one ReAct trajectory.
 
@@ -557,6 +567,11 @@ class _TranscriptWriter:
         self.tool_calls = 0
         self.invalid_tool_calls = 0
         self.last_finish_reason: str | None = None
+        self._token_reports: list[dict[str, int]] = []
+
+    @property
+    def token_usage(self) -> dict[str, int]:
+        return merge_token_usage(*self._token_reports)
 
     def _emit(self, record: dict[str, Any]) -> None:
         self._handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -594,6 +609,7 @@ class _TranscriptWriter:
             self.invalid_tool_calls += len(invalid_calls)
             response_metadata = message.response_metadata or {}
             self.last_finish_reason = response_metadata.get("finish_reason")
+            self._token_reports.append(_message_token_usage(message))
             self._pending = {
                 "step": self._step,
                 "role": "ai",
@@ -602,7 +618,7 @@ class _TranscriptWriter:
                 "invalid_tool_calls": invalid_calls,
                 "finish_reason": response_metadata.get("finish_reason"),
                 "final_text": None if calls else _transcript_text(message.content),
-                "usage": response_metadata.get("usage"),
+                "usage": response_metadata.get("usage") or getattr(message, "usage_metadata", None),
             }
         elif isinstance(message, ToolMessage):
             self._returns[str(getattr(message, "tool_call_id", ""))] = _transcript_digest(
@@ -706,6 +722,8 @@ def generate(
         metadata_payload["tool_calls"] = transcript.tool_calls
         metadata_payload["invalid_tool_calls"] = transcript.invalid_tool_calls
         metadata_payload["message_count"] = len(messages)
+        if transcript.token_usage:
+            metadata_payload["tokens"] = transcript.token_usage
         if budget_exceeded:
             metadata_payload["status"] = "failed"
             metadata_payload["error"] = "generation exceeded the total task budget"
@@ -719,6 +737,8 @@ def generate(
             metadata_payload["tool_calls"] = transcript.tool_calls
             metadata_payload["invalid_tool_calls"] = transcript.invalid_tool_calls
             metadata_payload["transcript"] = "t2_transcript.jsonl"
+            if transcript.token_usage:
+                metadata_payload["tokens"] = transcript.token_usage
         metadata_payload["status"] = "failed"
         metadata_payload["error_type"] = type(exc).__name__
         metadata_payload["error"] = str(exc).replace(config.api_key or "", "<redacted>")
