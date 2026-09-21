@@ -4,7 +4,7 @@ from pathlib import Path
 
 from common.runner import ExperimentRunner
 from common.task_schema import TaskSpec
-from common.modeling_pipeline import CANONICAL_PROJECT_FILES
+from common.modeling_pipeline import CANONICAL_PREP_FILES, CANONICAL_PROJECT_FILES
 
 
 def test_runner_default_timeout_matches_formal_baseline(tmp_path: Path):
@@ -286,6 +286,107 @@ def test_runner_recovers_child_generation_metadata_on_exception(tmp_path: Path):
     trace = json.loads((summary.run_dir / "execution_trace.json").read_text(encoding="utf-8"))
     assert trace["generation"]["status"] == "timeout"
     assert trace["generation"]["framework_status"] == "timeout"
+
+
+def _write_prep_project(root: Path, *, skip: str | None = None, profile: bool = True) -> None:
+    (root / "py" / "prep").mkdir(parents=True)
+    if profile:
+        (root / "py" / "项目画像.md").write_text("# smoke", encoding="utf-8")
+    for rel in CANONICAL_PREP_FILES:
+        if rel == skip:
+            continue
+        (root / "py" / "prep" / rel).write_text("# generated\n", encoding="utf-8")
+
+
+class _RecordingPyOSIS:
+    def __init__(self):
+        self.calls = []
+
+    def create_model(self, run_dir):
+        return {"execution_enabled": True, "status": "ready", "failure_code": None}
+
+    def execute(self, candidate_project, run_dir, **kwargs):
+        self.calls.append((candidate_project, run_dir, kwargs))
+        status = {
+            "execution_enabled": True,
+            "status": "succeeded",
+            "model_created": True,
+            "solver_converged": kwargs.get("solve", False),
+            "validation_passed": True,
+            "solve_requested": bool(kwargs.get("solve", False)),
+            "failure_code": None,
+        }
+        (run_dir / "backend_status.json").write_text(json.dumps(status), encoding="utf-8")
+        return status
+
+
+def _skills_and_task(tmp_path: Path, task_id: str):
+    skills = tmp_path / "skills"
+    (skills / "alpha").mkdir(parents=True)
+    (skills / "alpha" / "SKILL.md").write_text("---\nname: Alpha\n---\nBody", encoding="utf-8")
+    task = TaskSpec.from_dict(
+        {
+            "task_id": task_id,
+            "bridge_type": "cantilever_box",
+            "task_form": "whole",
+            "difficulty": "L1",
+            "natural_language_requirement": "build model",
+        }
+    )
+    return skills, task
+
+
+def test_runner_t6_executes_without_profile_like_parent_eval(tmp_path: Path):
+    skills, task = _skills_and_task(tmp_path, "t6-no-profile")
+    candidate = tmp_path / "candidate"
+    _write_prep_project(candidate, profile=False)
+    adapter = _RecordingPyOSIS()
+    runner = ExperimentRunner(
+        skills_dir=skills,
+        runs_dir=tmp_path / "runs",
+        pyosis_enabled=True,
+        solve_gate=True,
+        pyosis_adapter=adapter,
+    )
+    summary = runner.run(task, architecture_id="T6", seed=0, candidate_project=candidate)
+    backend = json.loads((summary.run_dir / "backend_status.json").read_text(encoding="utf-8"))
+    assert adapter.calls, "T6 must invoke PyOSIS even when 项目画像.md is absent"
+    assert backend["status"] == "succeeded"
+    assert adapter.calls[0][2].get("solve") is True
+
+
+def test_runner_t6_executes_when_a_prep_module_is_missing(tmp_path: Path):
+    skills, task = _skills_and_task(tmp_path, "t6-missing-prep")
+    candidate = tmp_path / "candidate"
+    _write_prep_project(candidate, skip="_10_stage.py")
+    adapter = _RecordingPyOSIS()
+    runner = ExperimentRunner(
+        skills_dir=skills,
+        runs_dir=tmp_path / "runs",
+        pyosis_enabled=True,
+        pyosis_adapter=adapter,
+    )
+    summary = runner.run(task, architecture_id="T6", seed=0, candidate_project=candidate)
+    backend = json.loads((summary.run_dir / "backend_status.json").read_text(encoding="utf-8"))
+    assert adapter.calls, "parent eval has no 13-file gate; T6 must still execute"
+    assert backend["failure_code"] != "candidate_layout_incomplete"
+
+
+def test_runner_other_arch_skips_pyosis_when_a_prep_module_is_missing(tmp_path: Path):
+    skills, task = _skills_and_task(tmp_path, "t5-missing-prep")
+    candidate = tmp_path / "candidate"
+    _write_prep_project(candidate, skip="_10_stage.py")
+    adapter = _RecordingPyOSIS()
+    runner = ExperimentRunner(
+        skills_dir=skills,
+        runs_dir=tmp_path / "runs",
+        pyosis_enabled=True,
+        pyosis_adapter=adapter,
+    )
+    summary = runner.run(task, architecture_id="T5", seed=0, candidate_project=candidate)
+    backend = json.loads((summary.run_dir / "backend_status.json").read_text(encoding="utf-8"))
+    assert adapter.calls == []
+    assert backend["failure_code"] == "candidate_layout_incomplete"
 
 
 def test_runner_marks_pyosis_not_run_when_generation_has_no_candidate(tmp_path: Path):

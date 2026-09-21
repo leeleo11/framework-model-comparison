@@ -395,16 +395,30 @@ class PyOSISAdapter:
         run_dir = Path(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
         if not self.execution_enabled:
-            return self.write_not_configured(run_dir)
+            result = self.write_not_configured(run_dir)
+        else:
+            wait_s: float | None = None
+            if deadline_monotonic is not None:
+                wait_s = max(0.0, deadline_monotonic - time.monotonic())
+            with osis_runtime_lock(timeout_s=wait_s):
+                result = self._execute_locked(
+                    candidate_project, run_dir, solve=solve,
+                    timeout_s=timeout_s, deadline_monotonic=deadline_monotonic,
+                )
 
-        wait_s: float | None = None
-        if deadline_monotonic is not None:
-            wait_s = max(0.0, deadline_monotonic - time.monotonic())
-        with osis_runtime_lock(timeout_s=wait_s):
-            return self._execute_locked(
-                candidate_project, run_dir, solve=solve,
-                timeout_s=timeout_s, deadline_monotonic=deadline_monotonic,
-            )
+        # Preserve the caller's solve intent even when execution fails before
+        # reaching the solver (for example, project creation or model build
+        # failure).  The official evaluator treats a requested but
+        # non-converged solve as a hard gate; dropping this field on an early
+        # return would incorrectly leave the static score in place.
+        if solve:
+            result = dict(result)
+            result.setdefault("solve_requested", True)
+            result.setdefault("solver_converged", False)
+            result.setdefault("solve_status", "not_run")
+            self._write_json(run_dir, "backend_status.json", result)
+            self._write_json(run_dir, "build_status.json", result)
+        return result
 
     def _execute_locked(
         self,

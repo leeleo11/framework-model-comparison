@@ -31,6 +31,15 @@ CANONICAL_PREP_FILES = (
 )
 CANONICAL_PROJECT_FILES = ("项目画像.md",) + CANONICAL_PREP_FILES
 
+# Files a candidate MUST contain before PyOSIS is invoked.  The profile
+# (项目画像.md) is deliberately absent: the parent repo's own pipeline neither
+# requires nor scores it (osis_text required_files = main + prep modules only),
+# and its gen/edit tasks stage the 11 prep files without the profile by design
+# ("画像文件不进 base_files").  Gating PyOSIS on it killed native T6 gen runs
+# that faithfully followed "仅需生成目标模块" and never wrote a profile -- a
+# framework-invented rule stricter than the parent repo it benchmarks.
+REQUIRED_PROJECT_FILES = CANONICAL_PREP_FILES
+
 _IGNORED_NAMES = {".git", ".venv", "venv", "env", "__pycache__", ".pytest_cache"}
 
 
@@ -67,7 +76,13 @@ def _canonical_relative(relative: str) -> str:
 
 
 def validate_project_layout(project: Path) -> dict[str, Any]:
-    """Validate the canonical project files without executing user code."""
+    """Validate the canonical project files without executing user code.
+
+    ``complete`` reflects only ``REQUIRED_PROJECT_FILES`` (the prep modules).
+    The profile is still reported in ``expected_files`` / ``file_hashes`` when
+    present, so downstream consumers keep a stable view, but a missing profile
+    no longer blocks PyOSIS execution.
+    """
 
     root = _resolve_project_root(project)
     code_root = _locate_code_root(project)
@@ -78,7 +93,8 @@ def validate_project_layout(project: Path) -> dict[str, Any]:
         path = _source_file(code_root, relative)
         key = _canonical_relative(relative)
         if not path.is_file():
-            missing.append(key)
+            if relative in REQUIRED_PROJECT_FILES:
+                missing.append(key)
             continue
         present.append(key)
         file_hashes[key] = hashlib.sha256(path.read_bytes()).hexdigest()

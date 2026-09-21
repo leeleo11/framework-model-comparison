@@ -21,6 +21,10 @@ class EvaluationResult:
     quality_score: float
     failure_reasons: list[str]
     components: dict[str, float]
+    # Continuous six-dimension composite before the mandatory execution
+    # gates are applied.  This is diagnostic only; the official score may be
+    # zero when model construction or solving fails.
+    quality_score_before_gate: float | None = None
     # The same weighted composite computed twice, differing only in where the
     # 0.40-weight construction dimension comes from: the candidate's source text
     # (static, the parent evaluator's original reading) or the model that was
@@ -73,7 +77,7 @@ def evaluate_run(artifacts: dict[str, Any]) -> EvaluationResult:
             artifacts.get("traceability", 1.0 if artifacts_complete else 0.0)
         ),
     }
-    score = 100 * sum(
+    score_before_gate = 100 * sum(
         QUALITY_WEIGHTS[name] * components[name] for name in QUALITY_WEIGHTS
     )
 
@@ -93,9 +97,14 @@ def evaluate_run(artifacts: dict[str, Any]) -> EvaluationResult:
     if not artifacts_complete:
         failure_reasons.append("artifacts_incomplete")
 
+    model_failure = (not compile_passed) or (not model_created)
+    solve_failure = solve_required and not solver_converged
+    score = 0.0 if (model_failure or solve_failure) else score_before_gate
+
     return EvaluationResult(
         complete_success=not failure_reasons,
         quality_score=score,
         failure_reasons=failure_reasons,
         components=components,
+        quality_score_before_gate=score_before_gate,
     )

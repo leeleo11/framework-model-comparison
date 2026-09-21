@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from common.modeling_pipeline import (
+    CANONICAL_PREP_FILES,
     CANONICAL_PROJECT_FILES,
     compile_python_project,
     materialize_project,
@@ -35,6 +36,34 @@ def test_materialize_project_copies_canonical_layout_and_reports_hashes(tmp_path
     }
     assert not (destination / "py" / "prep" / "__pycache__").exists()
     assert (destination / "py" / "prep" / "main.py").exists()
+
+
+def test_validate_project_layout_is_complete_without_profile(tmp_path: Path):
+    project = tmp_path / "project"
+    (project / "py" / "prep").mkdir(parents=True)
+    for name in CANONICAL_PREP_FILES:
+        (project / "py" / "prep" / name).write_text("# generated\n", encoding="utf-8")
+
+    layout = validate_project_layout(project)
+
+    assert layout["complete"] is True
+    assert "py/项目画像.md" not in layout["missing_files"]
+    assert "py/项目画像.md" not in layout["present_files"]
+
+
+def test_validate_project_layout_incomplete_when_prep_module_missing(tmp_path: Path):
+    project = tmp_path / "project"
+    (project / "py" / "prep").mkdir(parents=True)
+    (project / "py" / "项目画像.md").write_text("# smoke", encoding="utf-8")
+    for name in CANONICAL_PREP_FILES:
+        if name == "_10_stage.py":
+            continue
+        (project / "py" / "prep" / name).write_text("# generated\n", encoding="utf-8")
+
+    layout = validate_project_layout(project)
+
+    assert layout["complete"] is False
+    assert "py/prep/_10_stage.py" in layout["missing_files"]
 
 
 def test_validate_project_layout_and_compile_are_explicit(tmp_path: Path):

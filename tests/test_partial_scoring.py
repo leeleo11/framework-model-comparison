@@ -163,7 +163,7 @@ def test_runtime_stats_does_not_turn_missing_tokens_into_perfect_cost(tmp_path: 
 
 
 def test_official_evaluation_scores_partial_structure(tmp_path: Path):
-    """A partial layout still yields a non-zero composite via the systems it has."""
+    """A partial layout keeps a diagnostic composite but fails the official gate."""
     from common.official_evaluation import build_official_evaluation
 
     (tmp_path / "compile.json").write_text(json.dumps({"passed": True}), encoding="utf-8")
@@ -182,7 +182,8 @@ def test_official_evaluation_scores_partial_structure(tmp_path: Path):
         ref_score={"status": "evaluated", "systems": systems},
         model_conformance_gate=False,  # model not created -> construction zeroed
     )
-    assert result.quality_score > 0.0  # partial credit on applicable dimensions
+    assert result.quality_score == 0.0
+    assert result.quality_score_before_gate > 0.0
     assert result.complete_success is False  # but not complete
     assert result.components["dim_osis_text"] == 0.25  # partial structure counted
 

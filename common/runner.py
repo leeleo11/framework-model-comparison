@@ -125,6 +125,17 @@ class ExperimentRunner:
         )
         return status
 
+    @staticmethod
+    def _parent_native_eval(architecture_id: str) -> bool:
+        """T6 follows the parent train runner: no compile/layout hard gate.
+
+        ``osis-skill-enhance-main`` evaluates whatever is in ``py/``, then
+        optionally ``auto_solve``.  Missing files are scored, not used to skip
+        execution.  T1–T5 keep the comparison layout/compile pre-gates.
+        """
+
+        return architecture_id == "T6"
+
     def run(
         self,
         task: TaskSpec,
@@ -348,7 +359,10 @@ class ExperimentRunner:
             layout = materialization["layout"]
             compile_result = compile_python_project(candidate_root)
             compile_phase_end = time.monotonic()
-            if compile_result.get("passed") and layout.get("complete"):
+            run_pyosis = self._parent_native_eval(architecture_id) or (
+                compile_result.get("passed") and layout.get("complete")
+            )
+            if run_pyosis:
                 backend_status = osis.execute(
                     candidate_root,
                     run_dir,
