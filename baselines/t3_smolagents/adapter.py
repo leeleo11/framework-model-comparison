@@ -10,7 +10,9 @@ so the tools below stay module-level.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import time
 from importlib import metadata
 from pathlib import Path
@@ -33,6 +35,53 @@ from baselines._framework_common import (
 )
 
 _STATE: dict[str, Any] = {}
+
+
+# Some OpenAI-compatible gateways expose the model's tool-call serialization as
+# DeepSeek's DSML envelope even when the request asks for plain text.  The
+# smolagents CodeAgent intentionally parses its own ``<code>...</code>``
+# protocol, so the envelope must be unwrapped at the model boundary.  This is a
+# serialization adapter only: the Python action body is preserved byte-for-byte
+# (apart from XML entity decoding), and no tool selection or planning is added.
+_DSML_TAG = r"(?:｜｜DSML｜｜|\|DSML\|)"
+_DSML_PARAMETER = re.compile(
+    rf"<{_DSML_TAG}\s+invoke\s+name=[\"'](?P<invoke>[^\"']+)[\"'][^>]*>"
+    rf"\s*<{_DSML_TAG}\s+parameter\s+name=[\"'](?P<parameter>[^\"']+)[\"'][^>]*>"
+    rf"(?P<body>.*?)</{_DSML_TAG}\s+parameter>.*?</{_DSML_TAG}\s+invoke>",
+    re.DOTALL,
+)
+
+
+def normalize_code_agent_output(text: str) -> str:
+    """Convert a provider DSML action envelope to CodeAgent's code envelope.
+
+    ``CodeAgent`` remains responsible for parsing and executing the resulting
+    Python action.  Unrecognized text is returned unchanged so the native
+    parser can produce its normal self-correction message.
+    """
+
+    if not isinstance(text, str):
+        return text
+    if re.search(r"<code>.*?</code>", text, re.DOTALL):
+        return text
+    if re.search(r"```(?:python|py).*?```", text, re.DOTALL):
+        return text
+
+    actions: list[str] = []
+    for match in _DSML_PARAMETER.finditer(text):
+        invoke = match.group("invoke").strip()
+        parameter = match.group("parameter").strip()
+        body = html.unescape(match.group("body")).strip()
+        if invoke in {"python_interpreter", "code"} and parameter == "code":
+            if body:
+                actions.append(body)
+        elif invoke == "final_answer" and parameter in {"answer", "final_answer"}:
+            if body:
+                actions.append(f"final_answer({body!r})")
+
+    if not actions:
+        return text
+    return "<code>\n" + "\n\n".join(actions) + "\n</code>"
 
 # CodeAgent executes model-authored Python.  Keep the import allow-list narrow:
 # file creation must go through the bounded ``write_file`` tool rather than a
@@ -204,6 +253,21 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
 
     from smolagents import CodeAgent, LogLevel, OpenAIServerModel, tool
 
+    class _CodeActCompatibleOpenAIModel(OpenAIServerModel):
+        """Keep the provider wire format compatible with CodeAgent's parser."""
+
+        normalized_response_count = 0
+
+        def generate(self, messages, *args, **kwargs):  # type: ignore[no-untyped-def]
+            response = super().generate(messages, *args, **kwargs)
+            content = getattr(response, "content", None)
+            if isinstance(content, str):
+                normalized = normalize_code_agent_output(content)
+                if normalized != content:
+                    response.content = normalized
+                    self.normalized_response_count += 1
+            return response
+
     _STATE["skill_reader"] = __import__(
         "common.skill_adapter", fromlist=["SkillAdapter"]
     ).SkillAdapter(Path(request["skills_dir"]))
@@ -214,7 +278,7 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
              tool(list_reference_files), tool(write_file), tool(search_skill_cases),
              tool(read_candidate_file), tool(check_project_completeness),
              tool(search_knowledge)]
-    model = OpenAIServerModel(
+    model = _CodeActCompatibleOpenAIModel(
         model_id=request["model"],
         api_base=request["base_url"],
         api_key=request.get("api_key") or os.environ.get("OSIS_MODEL_API_KEY", ""),
@@ -252,6 +316,7 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         if usage is not None:
             meta["tokens"] = normalize_tokens(usage)
         meta["status"], meta_error = _state_to_status(meta["agent_state"])
+        meta["protocol_normalized_responses"] = model.normalized_response_count
         if meta_error:
             meta["error"] = meta_error
         meta["stop_reason"] = "max_steps" if meta["status"] == "failed" else "completed"
