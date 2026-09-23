@@ -31,7 +31,7 @@ def build_analysis(engine: OSISEngine) -> None:
     # 创建或修改荷载转换质量总体信息。
     engine.dynamic.load_to_mass.create("荷载转换质量_二期_二期")
     # 添加荷载转换质量项。
-    engine.dynamic.load_to_mass.get("荷载转换质量_二期_二期").add("a", "二期_二期", 1.0, 9.806, 0, 0, 0, 1, 1, 1)
+    engine.dynamic.load_to_mass.get("荷载转换质量_二期_二期").add("二期_二期", 1.0, 9.806, 0, 0, 0, 1, 1, 1)
 
 if __name__ == "__main__":
     from _0_engine import engine

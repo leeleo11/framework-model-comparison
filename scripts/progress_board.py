@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import subprocess
 import time
@@ -54,6 +55,8 @@ def _experiment_process_alive() -> bool | None:
         "-or $_.CommandLine -like '*_smolagents*' -or $_.CommandLine -like '*_langgraph*' "
         "-or $_.CommandLine -like '*_openhands*' -or $_.CommandLine -like '*_crewai*' "
         "-or $_.CommandLine -like '*t6_osisai*' -or $_.CommandLine -like '*opencode.exe serve*' "
+        "-or $_.CommandLine -like '*solve_existing_runs*' -or $_.CommandLine -like '*solve_t3_batch*' "
+        "-or $_.CommandLine -like '*replay_t6*' "
         "} | Measure-Object | Select-Object -ExpandProperty Count"
     )
     alive: bool | None
@@ -93,27 +96,93 @@ def _read_json(path: Path) -> dict:
 
 def _latest_mtime(path: Path) -> float:
     latest = 0.0
-    for f in path.rglob("*"):
+    skip_dirs = {".agents", "candidate_project", "__pycache__"}
+    stack = [path]
+    while stack:
+        current = stack.pop()
         try:
-            if f.is_file():
-                latest = max(latest, f.stat().st_mtime)
+            for child in current.iterdir():
+                if child.is_dir():
+                    if child.name in skip_dirs:
+                        continue
+                    stack.append(child)
+                    continue
+                latest = max(latest, child.stat().st_mtime)
         except OSError:
             continue
-    return latest
+    if latest:
+        return latest
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
-def _parse_run_dir(path: Path) -> dict | None:
+def _iter_run_dirs(root: Path):
+    """Yield cell directories in the nested tree and leftover flat names."""
+
+    for architecture in ARCHS:
+        arch_dir = root / architecture
+        if not arch_dir.is_dir():
+            continue
+        for bridge_dir in arch_dir.iterdir():
+            if not bridge_dir.is_dir():
+                continue
+            for form_dir in bridge_dir.iterdir():
+                if not form_dir.is_dir():
+                    continue
+                for cell in form_dir.iterdir():
+                    if cell.is_dir() and cell.name not in {
+                        "_archive", "archive", "candidate_project", "generated",
+                    }:
+                        yield cell
+    for path in root.iterdir():
+        if path.is_dir() and RUN_RE.match(path.name):
+            yield path
+
+
+def _parse_run_dir(path: Path, campaign_root: Path | None = None) -> dict | None:
     match = RUN_RE.match(path.name)
-    if match is None:
+    if match is not None:
+        result = match.groupdict()
+        result["index"] = int(result["index"])
+        result["seed"] = int(result["seed"])
+        result["source"] = str(
+            _read_json(path / "scorer_private" / "reference.json").get("source") or ""
+        )
+        return result
+    if campaign_root is None:
         return None
-    result = match.groupdict()
-    result["index"] = int(result["index"])
-    result["seed"] = int(result["seed"])
-    return result
+    try:
+        parts = path.relative_to(campaign_root).parts
+    except ValueError:
+        return None
+    if len(parts) != 4 or parts[0] not in ARCHS or parts[2] not in {"full", "gen", "edit"}:
+        return None
+    task = _read_json(path / "input.json")
+    manifest = _read_json(path / "manifest.json")
+    reference = _read_json(path / "scorer_private" / "reference.json")
+    task_id = str(task.get("task_id") or manifest.get("task_id") or "")
+    index = 0
+    tid_parts = task_id.split("__")
+    if tid_parts and tid_parts[-1].isdigit():
+        index = int(tid_parts[-1])
+    try:
+        seed = int(manifest.get("seed") or 0)
+    except (TypeError, ValueError):
+        seed = 0
+    return {
+        "bridge": parts[1],
+        "form": parts[2],
+        "index": index,
+        "architecture": parts[0],
+        "seed": seed,
+        "source": str(reference.get("source") or path.name),
+    }
 
 
 def _run_row(campaign_root: Path, path: Path) -> dict | None:
-    parsed = _parse_run_dir(path)
+    parsed = _parse_run_dir(path, campaign_root)
     if parsed is None:
         return None
     ev = _read_json(path / "evaluation.json")
@@ -144,6 +213,8 @@ def _run_row(campaign_root: Path, path: Path) -> dict | None:
         "form": parsed["form"],
         "index": parsed["index"],
         "architecture": arch,
+        "seed": parsed["seed"],
+        "source": parsed.get("source") or "",
         "seed": parsed["seed"],
         "state": state,
         "quality": ev.get("quality_score"),
@@ -209,13 +280,12 @@ def scan_roots(run_roots: list[Path], expected: dict | None = None, *,
         if not root.is_dir():
             continue
         rows.extend(_blocked_rows(root))
-        for path in root.iterdir():
-            if path.is_dir():
-                row = _run_row(root, path)
-                if row is not None:
-                    rows.append(row)
-                    if row["last_write"]:
-                        newest_overall = max(newest_overall, row["last_write"])
+        for path in _iter_run_dirs(root):
+            row = _run_row(root, path)
+            if row is not None:
+                rows.append(row)
+                if row["last_write"]:
+                    newest_overall = max(newest_overall, row["last_write"])
 
     # A run whose driver died keeps ``timer.json`` saying "running" forever, so
     # the per-run state alone cannot tell "working" from "abandoned".  Two
@@ -252,8 +322,11 @@ def scan_roots(run_roots: list[Path], expected: dict | None = None, *,
             "form": row["form"],
             "index": row["index"],
             "seed": row["seed"],
+            "source": row.get("source") or "",
             "cells": {},
         })
+        if row.get("source") and not group.get("source"):
+            group["source"] = row["source"]
         group["cells"][row["architecture"]] = row
 
     expected_total = None
@@ -355,7 +428,6 @@ def render(data: dict, title: str) -> str:
         body.append('<tr><td colspan="11" class="empty">尚未发现运行目录</td></tr>')
     head = "".join(f"<th>{arch}</th>" for arch in ARCHS)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="8">
 <title>{html.escape(title)}</title>
 <style>
 body{{font:14px/1.5 -apple-system,"Segoe UI",sans-serif;margin:18px;background:#0f1115;color:#e6e6e6}}
@@ -364,7 +436,7 @@ h1{{font-size:19px;margin:0 0 4px}} .meta{{color:#8b93a1;font-size:12px;margin-b
 .card{{background:#161a22;border:1px solid #232833;border-radius:6px;padding:8px 14px;min-width:92px}}
 .card b{{display:block;font-size:20px}} .card span{{color:#9ca3af;font-size:12px}}
 .bar{{height:10px;background:#1c2029;border-radius:5px;overflow:hidden;margin:10px 0 16px}}
-.bar>div{{height:100%;background:linear-gradient(90deg,#2e7d32,#66bb6a);width:{percent:.1f}%}}
+.bar>div{{height:100%;background:linear-gradient(90deg,#2e7d32,#66bb6a)}}
 table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #232833;padding:7px 9px;text-align:center;white-space:nowrap}}
 th{{background:#161a22;font-weight:600}} td.task{{text-align:left;color:#9ca3af;font-size:11px}}
 td.success{{background:#14401a}} td.failed{{background:#3a1616}} td.running{{background:#14243a}}
@@ -372,7 +444,26 @@ td.queue{{background:#25252a;color:#8b93a1}} td.blocked{{background:#2a1a33;colo
 td.stalled{{background:#3a2a12;color:#d0a060}}
 td.empty{{padding:24px;color:#8b93a1}} td span{{font-size:11px;color:#c0c5ce}}
 .legend{{margin-top:14px;color:#8b93a1;font-size:12px}}
-</style></head><body>
+</style>
+<script>
+(function(){{
+  const every = 8000;
+  async function tick(){{
+    try {{
+      const response = await fetch(location.href, {{cache: "no-store"}});
+      const text = await response.text();
+      const next = new DOMParser().parseFromString(text, "text/html");
+      if (!next.body) return;
+      const y = window.scrollY;
+      document.body.replaceWith(next.body);
+      window.scrollTo(0, y);
+    }} catch (err) {{}}
+    setTimeout(tick, every);
+  }}
+  setTimeout(tick, every);
+}})();
+</script>
+</head><body>
 <h1>实验统一进度 · {html.escape(title)}</h1>
 <div class="meta">已刷新 {data["ts"]} · 每 8 秒自动更新 · 只读</div>
 <div class="cards">
@@ -383,12 +474,22 @@ td.empty{{padding:24px;color:#8b93a1}} td span{{font-size:11px;color:#c0c5ce}}
 <div class="card"><b>{summary["queued"]}</b><span>排队/未创建</span></div>
 <div class="card"><b>{summary["failed"]}</b><span>完成但失败</span></div>
 </div>
-<div class="bar"><div></div></div>
+<div class="bar"><div style="width:{percent:.1f}%"></div></div>
 <table><tr><th>批次</th><th>任务</th><th>桥型</th><th>形式</th><th>索引</th>{head}</tr>
 {"".join(body)}
 </table>
 <div class="legend">✅ 完整成功　❌ 已结束但未达标　⟳ 运行中　停摆 目录仍在但整棵实验树已静默（driver 已死）　待排 尚未创建运行目录　门禁 泄漏门禁拦截　数字为框架综合分「构造维度取静态源码 | 构造维度取实际建模模型」，均为 0–100</div>
 </body></html>"""
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".writing")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        path.write_text(text, encoding="utf-8")
+        tmp.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -435,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             data = scan_roots(roots, expected=expected,
                               process_probe=_experiment_process_alive)
-            out.write_text(render(data, title), encoding="utf-8")
+            _atomic_write(out, render(data, title))
             print(
                 f'[{data["ts"]}] 总任务 {data["summary"]["total"]} · '
                 f'完成 {data["summary"]["done"]} · 运行 {data["summary"]["running"]} · '

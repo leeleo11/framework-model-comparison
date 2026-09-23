@@ -44,9 +44,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common.paths import resolve_args_parent_repo  # noqa: E402
+from common.paths import resolve_args_parent_repo, resolve_parent_repo  # noqa: E402
+from common.run_layout import candidate_run_dirs, lookup_source  # noqa: E402
 from scripts.run_all_parallel import BASE_AI_PORT, ARCHITECTURES, run_one  # noqa: E402
-from scripts.run_campaign import archive_stale, run_dir_for  # noqa: E402
+from scripts.run_campaign import archive_stale_cell  # noqa: E402
 
 BRIDGES = (
     "osis-bridge-cantilever-box",
@@ -90,13 +91,22 @@ def run_is_complete(run_dir: Path) -> bool:
 def missing_matrix(runs_dir: Path, seeds: list[int]) -> list[tuple[str, str, str, int]]:
     """Every matrix cell whose result is not complete."""
 
+    try:
+        parent = resolve_parent_repo()
+    except Exception:
+        parent = None
     pending: list[tuple[str, str, str, int]] = []
     for seed in seeds:
         for bridge in BRIDGES:
             for form in FORMS:
+                source = lookup_source(parent, bridge, form, 0)
                 for arch in ARCHITECTURES:
-                    target = run_dir_for(runs_dir, bridge, form, 0, arch, seed)
-                    if not run_is_complete(target):
+                    if not any(
+                        run_is_complete(path)
+                        for path in candidate_run_dirs(
+                            runs_dir, bridge, form, 0, arch, seed, source=source
+                        )
+                    ):
                         pending.append((arch, bridge, form, seed))
     return pending
 
@@ -165,9 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     started = time.monotonic()
     for slot, (arch, bridge, form, seed) in enumerate(selected):
-        target = run_dir_for(runs_dir, bridge, form, args.index, arch, seed)
-        if target.is_dir():
-            archived = archive_stale(target, stale_root)
+        source = lookup_source(args.parent_repo, bridge, form, args.index)
+        archived = archive_stale_cell(
+            runs_dir, bridge, form, args.index, arch, seed, stale_root,
+            source=source,
+        )
+        if archived:
             print(json.dumps({"archived": archived}, ensure_ascii=False), flush=True)
 
         ns = NS()

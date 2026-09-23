@@ -15,7 +15,7 @@
 5. 调用父仓库 `src/evaluation` 进行正式评分；
 6. 写入运行清单、计时、评分和审计文件。
 
-T1–T5 的区别只在编排框架，T6 使用 OSIS 原生编排。任务、技能快照、PyOSIS、评分器和输出契约保持一致。
+比较的变量是各框架自己的编排，以及该框架官方接口上的动作方式。T2 由调用方把读技能和写候选工程的工具交给 LangGraph，不预载模板路径，也不接知识库。T3 用 smolagents 的 Python 解释器读写文件。T4 用 OpenHands 的终端和文件编辑器。T5 用 CrewAI 自己的技能挂载和协作工具；最终 `### FILE:` 块由适配器写入候选工程，写入前去掉 Markdown 代码围栏和块尾的 `---`。T6 用 OSIS 原生编排。任务、技能快照、PyOSIS、评分器和输出契约保持一致。
 
 六个架构的环境、工具交互和单架构运行命令见 [`docs/框架使用说明.md`](docs/框架使用说明.md)。
 
@@ -137,8 +137,8 @@ uv run python scripts/run_dataset.py `
 | T1 | direct one-shot | `.venvs/main` |
 | T2 | LangGraph / LangChain | `.venvs/main` |
 | T3 | smolagents CodeAct | `.venvs/t3` |
-| T4 | OpenHands 原生 AgentSkills + CodeAct | `.venvs/t4` |
-| T5 | CrewAI 角色协作 | `.venvs/t5` |
+| T4 | OpenHands 原生技能 + 终端/文件编辑器 | `.venvs/t4` |
+| T5 | CrewAI 技能挂载与协作；`### FILE:` 块落盘时去掉围栏 | `.venvs/t5` |
 | T6 | OSIS 原生路由 | 父仓库 `.venv` 和 OSIS 工具链 |
 
 任务形式有三种：

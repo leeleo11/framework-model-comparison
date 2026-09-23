@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -38,7 +39,12 @@ def _fail(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def _patch_file(path: Path, pattern: str, repl: str, flags: int = 0) -> None:
+def _patch_file(
+    path: Path,
+    pattern: str,
+    repl: str | Callable[[re.Match[str]], str],
+    flags: int = 0,
+) -> None:
     text = path.read_text(encoding="utf-8")
     new, n = re.subn(pattern, repl, text, count=1, flags=flags)
     if n != 1:
@@ -257,6 +263,33 @@ def op_humidity(args: argparse.Namespace) -> None:
     _ok(f"creep_shrink no={args.no} humidity={args.humidity}")
 
 
+def _pst_prep_pattern(case: str, shape: str, method: str, force_name: str) -> str:
+    return (
+        rf'(engine\.load\.get\(\s*[\'"]'
+        + re.escape(case)
+        + rf'[\'"]\s*\)\.create\(\s*[\'"]PST[\'"]\s*,\s*[\'"]'
+        + re.escape(shape)
+        + rf'[\'"]\s*,\s*[\'"]'
+        + re.escape(method)
+        + rf'[\'"]\s*,\s*[\'"]'
+        + re.escape(force_name)
+        + rf'[\'"]\s*,\s*)(-?\d+(?:\.\d+)?)(\s*,\s*)(-?\d+(?:\.\d+)?)'
+    )
+
+
+def _patch_pst_prep(
+    path: Path, case: str, shape: str, method: str, force_name: str, stress: float
+) -> None:
+    s = _fmt_num(stress)
+    # 禁止 rf"\g<1>{s}\3{s}"：stress=1395000000.0 时 \3 与后续 1 粘成 \313（U+00CB），
+    # cr-003 的 _8 PST 行会变成 1395000000.0Ë95000000.0，main.py SyntaxError。
+    _patch_file(
+        path,
+        _pst_prep_pattern(case, shape, method, force_name),
+        lambda m: f"{m.group(1)}{s}{m.group(3)}{s}",
+    )
+
+
 def op_pst(args: argparse.Namespace) -> None:
     e = _engine()
     stress = args.stress
@@ -270,18 +303,14 @@ def op_pst(args: argparse.Namespace) -> None:
     if abs(float(hits[0]["beg"]) - float(stress)) > 1.0:
         _fail(f"pst {args.shape} beg 读回 {hits[0]['beg']} != {stress}")
     if args.prep:
-        pat = (
-            rf'(engine\.load\.get\(\s*[\'"]'
-            + re.escape(args.case)
-            + rf'[\'"]\s*\)\.create\(\s*[\'"]PST[\'"]\s*,\s*[\'"]'
-            + re.escape(args.shape)
-            + rf'[\'"]\s*,\s*[\'"]'
-            + re.escape(args.method)
-            + rf'[\'"]\s*,\s*[\'"]'
-            + re.escape(args.force_name)
-            + rf'[\'"]\s*,\s*)(-?\d+(?:\.\d+)?)(\s*,\s*)(-?\d+(?:\.\d+)?)'
+        _patch_pst_prep(
+            Path(args.prep),
+            args.case,
+            args.shape,
+            args.method,
+            args.force_name,
+            stress,
         )
-        _patch_file(Path(args.prep), pat, rf"\g<1>{stress}\3{stress}")
     _ok(f"pst {args.case!r} shape={args.shape} stress={stress}")
 
 

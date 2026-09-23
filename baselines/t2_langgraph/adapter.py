@@ -37,9 +37,7 @@ from common.skill_adapter import SkillAdapter
 from common.task_schema import TaskSpec
 from common.tool_policy import tool_error
 from baselines._framework_common import (
-    check_project_completeness as _check_completeness_shared,
     merge_token_usage,
-    search_knowledge as _knowledge_search_shared,
     list_reference_files as _list_reference_files_shared,
 )
 
@@ -428,21 +426,6 @@ def build_t2_tools(candidate_root: Path, skill_reader: SkillAdapter) -> list[Bas
             return tool_error(exc)
         return f"wrote {path.relative_to(candidate_root).as_posix()} ({len(content)} chars)"
 
-    @tool
-    def check_project_completeness() -> str:
-        """Report which canonical project files are still missing."""
-        try:
-            return _check_completeness_shared(candidate_root)
-        except Exception as exc:  # noqa: BLE001 - model can self-correct
-            return tool_error(exc)
-
-    @tool
-    def search_knowledge(query: str) -> str:
-        """Search the OSIS/pyosis knowledge base (Weknora) for API signatures,
-        parameter semantics, usage examples and error fixes. Prefer this before
-        guessing an API; input a Chinese or English keyword phrase."""
-        return _knowledge_search_shared(query)
-
     return [
         list_skills,
         read_skill,
@@ -451,8 +434,6 @@ def build_t2_tools(candidate_root: Path, skill_reader: SkillAdapter) -> list[Bas
         search_skill_cases,
         read_candidate_file,
         write_file,
-        check_project_completeness,
-        search_knowledge,
     ]
 
 
@@ -462,19 +443,6 @@ def build_t2_system_prompt(task: TaskSpec, skill_reader: SkillAdapter) -> str:
     reference_cases = json.dumps(
         skill_reader.visible_template_inventory(), ensure_ascii=False, indent=2
     )
-    # Detailed per-template FILE LIST, so the model does not have to guess
-    # paths (parity with T3-T5's reference_cases_payload).
-    detail = {}
-    for skill_id, names in skill_reader.visible_template_inventory().items():
-        detail[skill_id] = {}
-        for name in names:
-            tpl = skill_reader._skill_dir(skill_id) / "references" / "templates" / name
-            files = (
-                sorted(p.relative_to(tpl).as_posix() for p in tpl.rglob("*") if p.is_file())
-                if tpl.is_dir() else []
-            )
-            detail[skill_id][name] = files
-    reference_files = json.dumps(detail, ensure_ascii=False, indent=2)
     expected = json.dumps(
         ["py/" + item if item == CANONICAL_PROJECT_FILES[0] else "py/prep/" + item for item in CANONICAL_PROJECT_FILES],
         ensure_ascii=False,
@@ -485,7 +453,7 @@ You are in the generation layer only. Use the read-only skill tools to inspect
 the shared OSIS instructions and references, then use write_file to create the
 candidate project. Do not execute PyOSIS, call a scorer, modify any run result,
 or invent a different output format. Work in small inspect -> write -> inspect
-steps and finish by calling check_project_completeness.
+steps. List a template with list_reference_files before reading a file inside it.
 
 The candidate must contain every canonical file listed below. Write real,
 executable PYOSIS code guided by the skills; do not write placeholders merely
@@ -501,14 +469,9 @@ Canonical files:
 Shared skill index (full bodies are available through read_skill):
 {skill_index}
 
-Reference cases (visible templates, per skill; read them through
-read_skill_reference when a case could inform your model, e.g. a bridge of a
-similar structural type):
+Reference cases (visible template names, per skill). Use list_reference_files
+to see the files inside one template, then read_skill_reference to read one:
 {reference_cases}
-
-Reference case FILES (exact paths inside each visible template — use
-list_reference_files or read_skill_reference to read them; do NOT guess):
-{reference_files}
 """
 
 

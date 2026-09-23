@@ -21,6 +21,7 @@ from .modeling_pipeline import (
 )
 from .pyosis_adapter import PyOSISAdapter
 from .runtime_scorer import evaluate_runtime_snapshot
+from .run_layout import run_dir_from_task
 from .skill_adapter import SkillAdapter
 from .static_conformance import evaluate_static_conformance
 from .task_schema import DEFAULT_TOTAL_TIMEOUT_S, TaskSpec
@@ -147,10 +148,12 @@ class ExperimentRunner:
         candidate_generator: Callable[[TaskSpec, Path, SkillAdapter], Path] | None = None,
         started_monotonic: float | None = None,
         deadline_monotonic: float | None = None,
+        source: str = "",
     ) -> RunSummary:
         adapter = get_adapter(architecture_id)
-        run_name = f"{self._safe_name(task.task_id)}__{architecture_id}__seed{seed}"
-        run_dir = (self.runs_dir / run_name).resolve()
+        run_dir = run_dir_from_task(
+            self.runs_dir, task, architecture_id, seed, source=""
+        ).resolve()
         try:
             run_dir.relative_to(self.runs_dir)
         except ValueError as exc:

@@ -43,6 +43,19 @@ def test_t2_defaults_to_the_frozen_model(monkeypatch: pytest.MonkeyPatch):
     assert config.api_key == "test-key"
 
 
+def test_t2_tools_stay_on_skill_read_and_candidate_write(tmp_path: Path):
+    names = {tool.name for tool in build_t2_tools(tmp_path / "candidate", _skills(tmp_path))}
+    assert names == {
+        "list_skills",
+        "read_skill",
+        "read_skill_reference",
+        "list_reference_files",
+        "search_skill_cases",
+        "read_candidate_file",
+        "write_file",
+    }
+
+
 def test_t2_write_tool_rejects_paths_outside_candidate(tmp_path: Path):
     tools = build_t2_tools(tmp_path / "candidate", _skills(tmp_path))
     write_file = next(tool for tool in tools if tool.name == "write_file")

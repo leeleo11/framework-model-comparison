@@ -45,45 +45,45 @@ lc = engine.load.create("主梁自重", load_case_type="CS", scalar=1.0)
 ## 自重(CS)
 
 ```python
-lc.create_gravity(dXCoeff=0, dYCoeff=0, dZCoeff=1.0)
+lc.create_gravity(x_coeff=0, y_coeff=0, z_coeff=1.0)
 ```
 
-- **参数名是 camelCase**(`dXCoeff`/`dYCoeff`/`dZCoeff`),写成 snake_case(`d_z_coeff=...`)会抛 `TypeError`
-- `dZCoeff=1.0` 方向向下;`-1.04` 用于混凝土超方修正(典型值)
-- `dXCoeff` / `dYCoeff` 横/纵向分量,一般 0
+- **参数名是 snake_case**(`x_coeff`/`y_coeff`/`z_coeff`),写成 camelCase(`dZCoeff=...`)会抛 `TypeError`
+- `z_coeff=1.0` 方向向下;`-1.04` 用于混凝土超方修正(典型值)
+- `x_coeff` / `y_coeff` 横/纵向分量,一般 0
 
 ## 二期恒载(线荷载)
 
 ```python
 lc.create_line_load(
-    nEntity=1,
-    eCoordSystem=0,            # 0=单元坐标系, 1=整体坐标系
-    eLoadType=0,               # 0=连续, 1=离散
-    dOffsetXI=0.0, dOffsetXJ=1.0,    # 满布(0~1 覆盖全杆长)
-    dFZI=-22000, dFZJ=-22000,        # kN/m,负值向下
+    entity=1,
+    coord_system=0,            # 0=单元坐标系, 1=整体坐标系
+    load_type=0,               # 0=连续, 1=离散
+    offset_x_i=0.0, offset_x_j=1.0,    # 满布(0~1 覆盖全杆长)
+    fz_i=-22000, fz_j=-22000,          # kN/m,负值向下
     # 其余参数按需
 )
 ```
 
-- **参数名是 camelCase**(`nEntity`/`eCoordSystem`/`eLoadType`/`dOffsetXI`/`dFZI`...),snake_case 会抛 `TypeError`
-- `eLoadType=0` 满布
-- `dOffsetXI=0, dOffsetXJ=1` 覆盖单元全长
+- **参数名是 snake_case**(`entity`/`coord_system`/`load_type`/`offset_x_i`/`fz_i`...),写成 camelCase(`nEntity=`/`dFZI=`)会抛 `TypeError`
+- `load_type=0` 满布
+- `offset_x_i=0, offset_x_j=1` 覆盖单元全长
 - 多个单元用 for 循环逐个施加(不接受 `'1to10'` 字符串区间)
 
 ## 节点力
 
 ```python
 lc.create_nforce(
-    nEntity=node,
-    dFx=0, dFy=0, dFz=-28000,
-    dMx=0, dMy=0, dMz=0,
+    entity=node,
+    fx=0, fy=0, fz=-28000,
+    mx=0, my=0, mz=0,
 )
 # 模板常用便捷入口(与 _8 一致)
 lc.create("NFORCE", node, 0.0, 0.0, -28000.0, 0.0, 0.0, 0.0)
 ```
 
-- **参数名是 camelCase**(`nEntity`/`dFx`/`dFz`...),`node=`/`d_f_z=` 均会抛 `TypeError`
-- `dFz` 负值向下
+- **参数名是 snake_case**(`entity`/`fx`/`fz`...),写成 `nEntity=`/`dFz=`/`node=` 会抛 `TypeError`
+- `fz` 负值向下
 - 端横梁/锚固点常用
 - **同节点覆盖**:再 `create("NFORCE", 同节点, ...)` = 更新该节点力,不新增条目
 - **局部只改某节点力**:用 `osis-l0-hot` 的 `nforce` op,勿手写读回断言

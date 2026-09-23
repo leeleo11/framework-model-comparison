@@ -29,6 +29,7 @@ from common.modeling_pipeline import validate_project_layout
 from common.official_evaluation import build_official_evaluation, overwrite_evaluation
 from common.paths import resolve_args_parent_repo
 from common.pyosis_adapter import PyOSISAdapter, resolve_python_executable
+from common.run_layout import iter_cell_dirs
 from common.runtime_scorer import evaluate_runtime_snapshot
 from scripts.run_dataset import _ensure_osis_runtime_backend
 
@@ -42,11 +43,17 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def iter_run_dirs(runs_dir: Path) -> list[Path]:
-    """Return direct run directories, excluding campaign summaries and archives."""
+    """Return run directories, including nested architecture/bridge/form cells."""
 
     root = Path(runs_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(root)
+    nested = [
+        path for path in iter_cell_dirs(root)
+        if (path / "candidate_project").is_dir() or (path / "evaluation.json").is_file()
+    ]
+    if nested:
+        return nested
     return sorted(
         path for path in root.iterdir()
         if path.is_dir() and (path / "candidate_project").is_dir()

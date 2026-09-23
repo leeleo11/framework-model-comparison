@@ -18,9 +18,9 @@ def build_sections(engine: OSISEngine) -> None:
     engine.section.get(3).set_offset("Middle", 0.0, "Top", 0.0)
     engine.section.get(3).set_mesh(0, 0.1)
     # 添加或修改抗剪钢筋（按类型分发）
-    engine.section.get(1).add_rebar_s("SHEARSTIRRUP", 2, 0.1, 0.000452389)
-    engine.section.get(2).add_rebar_s("SHEARSTIRRUP", 2, 0.1, 0.000452389)
-    engine.section.get(3).add_rebar_s("SHEARSTIRRUP", 2, 0.1, 0.000452389)
+    engine.section.get(1).add_rebar_s("ShearStirrup", 2, 0.1, 0.000452389)
+    engine.section.get(2).add_rebar_s("ShearStirrup", 2, 0.1, 0.000452389)
+    engine.section.get(3).add_rebar_s("ShearStirrup", 2, 0.1, 0.000452389)
 
 if __name__ == "__main__":
     from _0_engine import engine

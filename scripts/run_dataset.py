@@ -62,6 +62,7 @@ from common.paths import (  # noqa: E402
     resolve_skills_dir,
 )
 from common.runner import ExperimentRunner  # noqa: E402
+from common.run_layout import nested_run_dir, parse_cell_name  # noqa: E402
 from common.skill_adapter import SkillAdapter  # noqa: E402
 from baselines._framework_common import (  # noqa: E402
     knowledge_search_enabled,
@@ -276,8 +277,20 @@ def _bypass_system_proxy_for_gateway(base_url: str | None = None) -> None:
 
 
 def _run_dir(runs_dir: Path, task_id: str, architecture_id: str, seed: int) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("._") or "task"
-    return (Path(runs_dir) / f"{safe}__{architecture_id}__seed{seed}").resolve()
+    parsed = parse_cell_name(f"{task_id}__{architecture_id}__seed{seed}")
+    if parsed is None:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("._") or "task"
+        return nested_run_dir(
+            Path(runs_dir), "unknown", "unknown", 0, architecture_id, seed
+        ).with_name(f"{safe}__{architecture_id}__seed{seed}")
+    return nested_run_dir(
+        Path(runs_dir),
+        parsed["bridge"],
+        parsed["form"],
+        parsed["index"],
+        architecture_id,
+        seed,
+    ).resolve()
 
 
 def _is_infra_error(text: str | None) -> bool:
@@ -1028,6 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
             candidate_generator=generate_candidate,
             started_monotonic=generation_started,
             deadline_monotonic=total_deadline,
+            source=entry.source,
         )
         execution_trace_path = Path(summary.run_dir) / "execution_trace.json"
         infra = False

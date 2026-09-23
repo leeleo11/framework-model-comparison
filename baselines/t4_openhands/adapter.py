@@ -7,15 +7,13 @@ Verified against openhands_sdk 1.44.1 installed source: ``LLM``
 ``Conversation`` factory (sdk/conversation/conversation.py:34) with
 ``max_iteration_per_run``, blocking ``send_message``+``run()``
 (sdk/conversation/base.py:199/213), final text via
-``openhands.sdk.conversation.get_agent_final_response``. Custom tools wrap a
-plain function as Action/ToolDefinition/ToolExecutor and register it
-(sdk/tool/registry.py:113); the registered name must equal the ``Tool(name=..)``
-spec string and the instance needs a concrete ``.executor``.
+``openhands.sdk.conversation.get_agent_final_response``. Exec tools come from
+``openhands-tools`` 1.44.1 ``get_default_tools(enable_browser=False)``:
+terminal, file editor, and task tracker. Skills stay on ``invoke_skill``.
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import time
@@ -25,32 +23,15 @@ from typing import Any
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
-from baselines._framework_common import (
-    resolve_max_steps, resolve_max_tokens,
-    search_knowledge as _knowledge_search_shared,  # noqa: E402
+from baselines._framework_common import (  # noqa: E402
     candidate_root,
-    check_project_completeness,
     finish,
-    list_reference_files as list_reference_files_shared,
     load_request,
     normalize_tokens,
-    read_candidate_file,
+    resolve_max_steps,
+    resolve_max_tokens,
 )
 from common.modeling_pipeline import CANONICAL_PROJECT_FILES
-from common.tool_policy import tool_error
-
-_STATE: dict[str, Any] = {}
-
-T4_CUSTOM_TOOL_NAMES = (
-    "read_skill_reference",
-    "list_reference_files",
-    "search_knowledge",
-    "list_candidate_files",
-    "read_candidate_file",
-    "write_file",
-    "check_python_syntax",
-    "check_project_completeness",
-)
 
 
 def summarize_events(events: Any) -> dict[str, Any]:
@@ -150,11 +131,10 @@ Task:
 Candidate contract:
 {file_list}
 
-Work progressively: invoke skill -> inspect candidate/reference -> write a
-small coherent batch -> inspect it. Use check_python_syntax, then
-check_project_completeness before FinishTool. Write real executable PYOSIS
-code, never placeholders. In the final answer list the files written and any
-remaining risk.
+Work in the candidate workspace. Use invoke_skill for the mounted skills, then
+the framework terminal and file editor to write the files. Finish with
+FinishTool. Write real executable PYOSIS code, never placeholders. In the
+final answer list the files written and any remaining risk.
 """
 
 
@@ -187,128 +167,12 @@ def _package_version(name: str) -> str:
         return "unavailable"
 
 
-def _read_skill_reference(skill_id: str, relative_path: str) -> str:
-    try:
-        return _STATE["skill_reader"].read_reference(skill_id, relative_path)
-    except Exception as exc:  # noqa: BLE001
-        return f"TOOL_ERROR: {type(exc).__name__}: {exc}"
+def native_tool_specs() -> list[Any]:
+    """OpenHands default exec tools. Browser stays off."""
 
+    from openhands.tools.preset.default import get_default_tools
 
-def _write_file(relative_path: str, content: str) -> str:
-    try:
-        root: Path = _STATE["candidate_root"]
-        resolved = (root / relative_path).resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError("path escapes candidate workspace")
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
-        return f"wrote {relative_path} ({len(content)} chars)"
-    except Exception as exc:  # noqa: BLE001 - tool errors are recoverable
-        return tool_error(exc)
-
-
-def _search_knowledge(query: str) -> str:
-    return _knowledge_search_shared(query)
-
-def _list_reference_files(skill_id: str, template_name: str) -> str:
-    return list_reference_files_shared(_STATE["skill_reader"], skill_id, template_name)
-
-
-def _read_candidate(relative_path: str) -> str:
-    return read_candidate_file(_STATE["candidate_root"], relative_path)
-
-
-def _list_candidate_files() -> str:
-    try:
-        root: Path = _STATE["candidate_root"]
-        files = sorted(
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file()
-        )
-        return json.dumps(files, ensure_ascii=False)
-    except Exception as exc:  # noqa: BLE001
-        return tool_error(exc)
-
-
-def _check_python_syntax() -> str:
-    root: Path = _STATE["candidate_root"]
-    failures: dict[str, str] = {}
-    for path in sorted(root.rglob("*.py")):
-        relative = path.relative_to(root).as_posix()
-        try:
-            ast.parse(path.read_text(encoding="utf-8"), filename=relative)
-        except (SyntaxError, UnicodeError) as exc:
-            failures[relative] = str(exc).replace(str(root), "<candidate>")
-    return json.dumps(
-        {"ok": not failures, "checked": len(list(root.rglob("*.py"))), "failures": failures},
-        ensure_ascii=False,
-    )
-
-
-def _check_completeness() -> str:
-    return check_project_completeness(_STATE["candidate_root"])
-
-
-def _expose(name: str, description: str, props: dict, required: list, fn) -> Any:
-    from openhands.sdk import Tool
-    from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor, register_tool
-
-    action_t = Action.from_mcp_schema(
-        name + "_action",
-        {"type": "object", "properties": props, "required": required},
-    )
-
-    # The SDK's Observation is a discriminated union on ``kind``; a concrete
-    # subclass (auto-assigned a kind from its class name) is required, the base
-    # ``Observation.from_text`` yields kind='' which the schema rejects.
-    class _ToolObservation(Observation):
-        """Observation returned by a comparison harness tool."""
-
-    class _Exec(ToolExecutor):
-        def __call__(self, action, conversation=None):  # noqa: ANN001, D102
-            # action.model_dump() includes schema meta fields (e.g. ``kind``);
-            # pass only the declared tool args.
-            args = {k: v for k, v in action.model_dump().items() if k in props}
-            try:
-                return _ToolObservation.from_text(text=str(fn(**args)))
-            except Exception as exc:  # noqa: BLE001
-                return _ToolObservation.from_text(text=f"error: {exc}", is_error=True)
-
-    class _ToolDef(ToolDefinition[action_t, _ToolObservation]):
-        @classmethod
-        def create(cls, conv_state=None, **kwargs):  # noqa: ANN001, D102
-            return [cls(description=description, action_type=action_t,
-                        observation_type=_ToolObservation, executor=_Exec())]
-
-    _ToolDef.name = name
-    register_tool(name, _ToolDef.create()[0])
-    return Tool(name=name)
-
-
-def _build_custom_tools() -> list[Any]:
-    """Register only candidate/reference tools; skills stay SDK-native."""
-    return [
-        _expose("read_skill_reference", "Read one reference file inside a skill directory.",
-                {"skill_id": {"type": "string"}, "relative_path": {"type": "string"}},
-                ["skill_id", "relative_path"], _read_skill_reference),
-        _expose("list_reference_files", "List the exact files inside one reference-case template.",
-                {"skill_id": {"type": "string"}, "template_name": {"type": "string"}},
-                ["skill_id", "template_name"], _list_reference_files),
-        _expose("search_knowledge", "Search the OSIS/pyosis knowledge base for an API signature or usage detail. Prefer this before guessing an API.",
-                {"query": {"type": "string"}}, ["query"], _search_knowledge),
-        _expose("list_candidate_files", "List files already present in the candidate project.",
-                {}, [], _list_candidate_files),
-        _expose("read_candidate_file", "Read a file the agent wrote into the candidate project.",
-                {"relative_path": {"type": "string"}}, ["relative_path"], _read_candidate),
-        _expose("write_file", "Write UTF-8 text to a candidate project file.",
-                {"relative_path": {"type": "string"}, "content": {"type": "string"}},
-                ["relative_path", "content"], _write_file),
-        _expose("check_python_syntax", "Parse every candidate Python file and report syntax errors.",
-                {}, [], _check_python_syntax),
-        _expose("check_project_completeness", "Report which canonical files are still missing.", {},
-                [], _check_completeness),
-    ]
+    return get_default_tools(enable_browser=False)
 
 
 def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
@@ -316,13 +180,9 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
     from openhands.sdk import Agent, AgentContext, Conversation, LLM
     from openhands.sdk.conversation import get_agent_final_response
 
-    from common.skill_adapter import SkillAdapter
-
-    _STATE["skill_reader"] = SkillAdapter(Path(request["skills_dir"]))
-    _STATE["candidate_root"] = candidate_root(request)
+    root = candidate_root(request)
     native_skills = _load_native_skills(Path(request["skills_dir"]))
-
-    tools = _build_custom_tools()
+    tools = native_tool_specs()
     llm = LLM(
         model=f"openai/{request['model']}",
         base_url=request["base_url"],
@@ -349,7 +209,7 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
     )
     conversation = Conversation(
         agent=agent,
-        workspace=str(_STATE["candidate_root"]),
+        workspace=str(root),
         max_iteration_per_run=resolve_max_steps(request.get("max_steps"), default=200),
         visualizer=None,
         # The candidate workspace is an experiment artifact.  Do not let the
@@ -376,7 +236,7 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         "skill_loading": "openhands_native_progressive_v2",
         "native_skill_count": len(native_skills),
         "native_prompt_chars": len(prompt),
-        "custom_tools": list(T4_CUSTOM_TOOL_NAMES),
+        "framework_tools": [tool.name for tool in tools],
         "model_calls": 0,
         "tool_calls": 0,
         "framework_steps": 0,

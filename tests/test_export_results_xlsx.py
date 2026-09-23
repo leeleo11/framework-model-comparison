@@ -108,7 +108,8 @@ def _make_run(
     _write_json(
         run / "scorer_private" / "reference.json",
         {"split": split, "form": {"whole": "full", "module": "gen", "modify": "edit"}.get(task_form),
-         "index": 0, "module": module, "target": target},
+         "index": 0, "module": module, "target": target,
+         "source": "悬浇连续梁-20+30+20-示例-1"},
     )
     return run
 
@@ -131,6 +132,8 @@ def test_collect_run_records_reads_all_modeling_artifacts(tmp_path: Path):
     assert record["model_created"] == 1
     assert record["tool_calls"] == 4
     assert record["run_dir"] == str(run.resolve())
+    assert record["result_tree"] == ""
+    assert record["source"] == "悬浇连续梁-20+30+20-示例-1"
 
 
 def test_export_results_creates_formatted_workbook_with_summary_formulas(tmp_path: Path):
@@ -139,8 +142,9 @@ def test_export_results_creates_formatted_workbook_with_summary_formulas(tmp_pat
     workbook = load_workbook(output, data_only=False)
 
     assert workbook.sheetnames[:3] == ["Table 1", "按任务形式", "桥型-悬浇箱梁"]
-    assert "按父仓库规则" in workbook.sheetnames
-    assert "桥型-刚构箱梁" in workbook.sheetnames
+    assert "结果目录" in workbook.sheetnames
+    tree = workbook["结果目录"]
+    assert [cell.value for cell in tree[1]][:3] == ["架构", "桥型", "任务形式"]
     table1 = workbook["Table 1"]
     assert [cell.value for cell in table1[1]] == [
         "Configuration", "Compile", "Struct.", "Constr.", "Sim.",

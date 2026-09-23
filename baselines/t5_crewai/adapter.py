@@ -10,7 +10,9 @@ env vars read in crewai/telemetry/telemetry.py:162-170.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 from importlib import metadata
 from pathlib import Path
@@ -20,33 +22,28 @@ os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
 
-from baselines._framework_common import (
-    resolve_max_steps, resolve_max_tokens,  # noqa: E402  (after env vars)
-    build_prompt,
+from baselines._framework_common import (  # noqa: E402
     candidate_root,
-    check_project_completeness as check_project_completeness_shared,
     finish,
-    list_reference_files as list_reference_files_shared,
     load_request,
     normalize_tokens,
-    read_candidate_file as read_candidate_file_shared,
-    reference_cases_payload,
-    search_knowledge as _knowledge_search_shared,
-    search_skill_cases as search_skill_cases_shared,
-    skill_index_payload,
+    resolve_max_steps,
+    resolve_max_tokens,
 )
-from common.tool_policy import tool_error
+from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 
 _STATE: dict[str, Any] = {}
 
-# Do not rely on CrewAI's library defaults for the experiment boundary.  A
-# future CrewAI release could enable its code executor or delegation by
-# default, which would let a role bypass the bounded ``write_file`` tool and
-# create files in an arbitrary working directory (including an OSIS project).
+# CrewAI 1.15 injects DelegateWork and AskQuestion when delegation is on, and
+# injects load_skill when a skill directory is mounted on the crew.  Its code
+# interpreter is deprecated and no longer registers a tool, so leave it off.
 AGENT_POLICY = {
     "allow_code_execution": False,
-    "allow_delegation": False,
+    "allow_delegation": True,
 }
+
+_FILE_BLOCK = re.compile(r"^### FILE:\s*(?P<path>.+?)\s*$", re.MULTILINE)
+_FENCE_LINE = re.compile(r"^```[A-Za-z0-9_+-]*\s*$")
 
 
 def _package_version(name: str) -> str:
@@ -125,142 +122,59 @@ def allocate_role_timeouts(generation_timeout_s: float) -> dict[str, int]:
     return None
 
 
-def _resolve(relative_path: str) -> Path:
-    root = _STATE["candidate_root"]
-    resolved = (root / relative_path).resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError("path escapes candidate workspace")
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    return resolved
+def _canonical_markers() -> str:
+    paths = ["py/项目画像.md", *[f"py/prep/{name}" for name in CANONICAL_PROJECT_FILES[1:]]]
+    return "\n".join(f"### FILE: {path}" for path in paths)
 
 
-def list_skills() -> str:
-    """List the ids of all available skills."""
-    return "\n".join(
-        entry["skill_id"] for entry in _STATE["skill_reader"].skill_index()
-    )
+def _unwrap_file_body(content: str) -> str:
+    """Keep the file body from a task answer.
 
-
-def read_skill(skill_id: str) -> str:
-    """Read the complete SKILL.md body of one skill.
-
-    Args:
-        skill_id: id of the skill, e.g. osis-bridge-cantilever-box
-    """
-    try:
-        return _STATE["skill_reader"].read_skill(skill_id)
-    except Exception as exc:  # noqa: BLE001 - let the role self-correct
-        return tool_error(exc)
-
-
-def read_skill_reference(skill_id: str, relative_path: str) -> str:
-    """Read one reference file inside a skill directory.
-
-    Args:
-        skill_id: id of the skill
-        relative_path: path inside the skill folder, e.g. references/templates/<name>/项目画像.md
-    """
-    try:
-        return _STATE["skill_reader"].read_reference(skill_id, relative_path)
-    except Exception as exc:  # noqa: BLE001
-        return f"TOOL_ERROR: {type(exc).__name__}: {exc}"
-
-
-def write_file(relative_path: str, content: str) -> str:
-    """Write UTF-8 text to a candidate project file (creates parent dirs).
-
-    Args:
-        relative_path: target path relative to the candidate project root
-        content: full text content to write
-    """
-    try:
-        target = _resolve(relative_path)
-        target.write_text(content, encoding="utf-8")
-        return f"wrote {relative_path} ({len(content)} chars)"
-    except Exception as exc:  # noqa: BLE001 - let the role self-correct
-        return tool_error(exc)
-
-
-def search_skill_cases(query: str) -> str:
-    """Search every skill's markdown for a case or API keyword.
-
-    Args:
-        query: keyword phrase to search for
-    """
-    return search_skill_cases_shared(_STATE["skill_reader"], query)
-
-
-
-def search_knowledge(query: str) -> str:
-    """Search the OSIS/pyosis knowledge base (Weknora) for API signatures,
-    parameter semantics, usage examples and error fixes.
-
-    Args:
-        query: keyword phrase (Chinese or an API name)
-    """
-    return _knowledge_search_shared(query)
-
-def list_reference_files(skill_id: str, template_name: str) -> str:
-    """List the exact files inside one reference-case template.
-
-    Args:
-        skill_id: id of the skill
-        template_name: the template directory name
-    """
-    return list_reference_files_shared(_STATE["skill_reader"], skill_id, template_name)
-
-
-def read_candidate_file(relative_path: str) -> str:
-    """Read a file the agent already wrote into the candidate project.
-
-    Args:
-        relative_path: path relative to the candidate project root
-    """
-    return read_candidate_file_shared(_STATE["candidate_root"], relative_path)
-
-
-def check_project_completeness() -> str:
-    """Report which canonical project files still need to be written."""
-    return check_project_completeness_shared(_STATE["candidate_root"])
-
-
-def build_role_tools(tool_factory: Any) -> dict[str, list[Any]]:
-    """Build one identical, bounded tool interface for every CrewAI role.
-
-    Role prompts differ (research, implementation, review), but capability
-    access must not become an unreported confounder.  In particular, the
-    engineer and reviewer still need to be able to inspect the same mounted
-    skills and references as the researcher; the prompts control when they
-    use those capabilities.
+    CrewAI returns plain text. Models still wrap a file in a markdown fence
+    and may add a ``---`` rule after it. Those lines are not part of the file.
     """
 
-    functions = (
-        list_skills,
-        read_skill,
-        read_skill_reference,
-        list_reference_files,
-        write_file,
-        search_skill_cases,
-        read_candidate_file,
-        check_project_completeness,
-        search_knowledge,
-    )
-    shared = [tool_factory(function) for function in functions]
-    return {role: list(shared) for role in ("researcher", "engineer", "reviewer")}
+    lines = content.strip().splitlines()
+    if lines and _FENCE_LINE.match(lines[0].strip()):
+        lines = lines[1:]
+    while lines and (not lines[-1].strip() or lines[-1].strip() == "---" or _FENCE_LINE.match(lines[-1].strip())):
+        lines.pop()
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _materialize_file_blocks(text: str, root: Path) -> list[str]:
+    """Write the crew's final answer into the candidate project.
+
+    This is the harness boundary after kickoff.  The model is not given a
+    custom write tool; CrewAI's own task output is the file source.
+    """
+
+    matches = list(_FILE_BLOCK.finditer(text))
+    written: list[str] = []
+    root = root.resolve()
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        content = _unwrap_file_body(text[start:end])
+        relative = match.group("path").strip().replace("\\", "/").lstrip("/")
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content.strip() + "\n", encoding="utf-8")
+        written.append(relative)
+    return written
 
 
 def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     from crewai import Agent, Crew, Process, Task
     from crewai.llm import LLM
-    from crewai.tools import tool
 
-    from common.skill_adapter import SkillAdapter
+    root = candidate_root(request)
+    _STATE["candidate_root"] = root
+    skills_dir = Path(request["skills_dir"])
 
-    _STATE["skill_reader"] = SkillAdapter(Path(request["skills_dir"]))
-    _STATE["candidate_root"] = candidate_root(request)
-
-    role_tools = build_role_tools(tool)
     llm = LLM(
         model=request["model"],
         base_url=request["base_url"],
@@ -269,10 +183,9 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         timeout=float(request["request_timeout_s"]),
         max_tokens=resolve_max_tokens(request.get("max_tokens")),
         temperature=float(request.get("temperature", 0.0)),
-        reasoning_effort=request.get("reasoning_effort"),
+        **({"reasoning_effort": request["reasoning_effort"]}
+           if request.get("reasoning_effort") else {}),
     )
-    prompt = build_prompt(request, skill_index_payload(request["skills_dir"]),
-                          reference_cases_payload(request["skills_dir"]))
 
     role_budgets = allocate_role_budgets(
         resolve_max_steps(request.get("max_steps"), default=200))
@@ -280,66 +193,88 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         float(request.get("generation_timeout_s") or 3600.0)
     )
 
-    # Multi-agent role division: research -> engineering -> review.
-    # The role max_iter values are derived from the shared budget and sum to it
-    # exactly.  Wall-clock limits remain per-role safety bounds; the outer
-    # runner owns the total task deadline.
+    # Skills are mounted through CrewAI's own skills= path.  Delegation is on,
+    # so kickoff adds the official tools "Delegate work to coworker" and
+    # "Ask question to coworker".  No custom tools.
     researcher = Agent(
         role="Bridge case researcher",
-        goal="Inspect the shared skills, interface docs and reference-case "
-             "templates and produce a written design brief for the engineer.",
-        backstory="Expert in OSIS/PYOSIS bridge modelling conventions. Reads "
-                  "skills and closest reference cases.",
-        llm=llm, tools=role_tools["researcher"], max_iter=role_budgets["researcher"],
+        goal="Load the relevant mounted skills and produce a written design brief.",
+        backstory="Expert in OSIS/PYOSIS bridge modelling conventions. Uses the crew's own load_skill tool.",
+        llm=llm, max_iter=role_budgets["researcher"],
         **AGENT_POLICY, verbose=False,
     )
     engineer = Agent(
         role="OSIS bridge model engineer",
-        goal="Write every canonical candidate-project file with real, "
-             "executable PYOSIS code, using the research brief and write_file.",
-        backstory="Precise bridge-engineering coder producing the 13 canonical files.",
-        llm=llm, tools=role_tools["engineer"], max_iter=role_budgets["engineer"],
+        goal="Write every canonical candidate-project file as FILE blocks, then repair the reviewer's fix list.",
+        backstory="Precise bridge-engineering coder producing the 13 canonical files from loaded skills.",
+        llm=llm, max_iter=role_budgets["engineer"],
         **AGENT_POLICY, verbose=False,
     )
     reviewer = Agent(
-        role="Candidate completeness reviewer",
-        goal="Call check_completeness and read_candidate, and state "
-             "exactly which canonical files remain missing or broken.",
-        backstory="Rigorous QA agent. Never fabricates; reports facts only.",
-        llm=llm, tools=role_tools["reviewer"], max_iter=role_budgets["reviewer"],
+        role="Candidate reviewer",
+        goal="Check the engineer's FILE blocks against the mounted skills and return a concrete fix list.",
+        backstory="Rigorous QA agent. Names defects and may ask the engineer through the crew's delegation tool.",
+        llm=llm, max_iter=role_budgets["reviewer"],
         **AGENT_POLICY, verbose=False,
     )
 
+    task_json = json.dumps(request["task"], ensure_ascii=False, indent=2)
+    markers = _canonical_markers()
     research_task = Task(
         description=(
-            "Study the task and the available skills/reference cases, then "
-            "write a short design brief (structure, materials, key loads).\n\n"
-            "Task context:\n" + prompt
+            "Use the crew's load_skill tool to read the relevant mounted "
+            "skills. You may also use the crew's own collaboration tools, "
+            "\"Delegate work to coworker\" and \"Ask question to coworker\". "
+            "Return a design brief the engineer can implement "
+            "(structure, materials, key loads).\n\nTask:\n" + task_json
         ),
-        expected_output="Design brief for the engineer.", agent=researcher,
+        expected_output="Design brief grounded in the loaded skills.",
+        agent=researcher,
     )
     engineering_task = Task(
         description=(
-            "Using the research brief, write EVERY canonical candidate file "
-            "(py/项目画像.md, py/prep/main.py, _0_engine.py .. _10_stage.py) "
-            "with write_file. Then call check_completeness until the project is complete."
+            "From the research brief and the mounted skills, write the "
+            "complete candidate project. Output exactly one block for each "
+            "canonical file, in this order. Every block starts with its "
+            "marker line and contains the complete file. Put nothing else "
+            "outside the blocks.\n\n" + markers + "\n\nTask:\n" + task_json
         ),
-        expected_output="All canonical files written; the project is complete.",
+        expected_output="The complete candidate project as one FILE block per canonical file.",
         agent=engineer, context=[research_task],
     )
     review_task = Task(
         description=(
-            "Verify the candidate: call check_completeness, spot-check files "
-            "with read_candidate_file, and report any missing/broken file."
+            "Review the engineer's FILE blocks against the mounted skills. "
+            "Do not rewrite the files. Report every missing canonical file "
+            "and every concrete defect: empty or placeholder arguments, API "
+            "calls that do not match the skill, and files that are not "
+            "executable PYOSIS. If the candidate is acceptable, say that no "
+            "change is required. Use \"Delegate work to coworker\" or "
+            "\"Ask question to coworker\" when the engineer should repair or "
+            "clarify a specific defect."
         ),
-        expected_output="Review verdict with the exact missing files.",
+        expected_output=(
+            "A fix list naming each missing file or concrete defect, or an "
+            "explicit statement that no change is required."
+        ),
         agent=reviewer, context=[engineering_task],
+    )
+    revise_task = Task(
+        description=(
+            "Apply the reviewer's fix list. Output the complete candidate "
+            "again, exactly one FILE block per canonical file, in this order. "
+            "If the reviewer stated that no change is required, repeat the "
+            "engineer's blocks unchanged.\n\n" + markers
+        ),
+        expected_output="The final candidate project as one FILE block per canonical file.",
+        agent=engineer, context=[engineering_task, review_task],
     )
 
     crew = Crew(
         agents=[researcher, engineer, reviewer],
-        tasks=[research_task, engineering_task, review_task],
+        tasks=[research_task, engineering_task, review_task, revise_task],
         process=Process.sequential, verbose=False,
+        skills=[skills_dir],
     )
     agents = [researcher, engineer, reviewer]
     meta: dict[str, Any] = {
@@ -353,12 +288,19 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         "model_calls": 0,
         "tool_calls": 0,
         "stop_reason": None,
+        "collaboration_tools": [
+            tool.name
+            for tool in crew._prepare_tools(researcher, research_task, [])
+        ],
     }
     try:
         result = crew.kickoff()
+        raw = str(getattr(result, "raw", ""))
+        written = _materialize_file_blocks(raw, root)
         meta.update(_crew_metrics(agents))
         meta["status"] = "completed"
-        meta["final_answer"] = str(getattr(result, "raw", ""))[:2000]
+        meta["files_written"] = written
+        meta["final_answer"] = raw[:2000]
         usage = getattr(result, "token_usage", None)
         if usage is not None:
             meta["tokens"] = normalize_tokens(usage)

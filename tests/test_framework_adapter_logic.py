@@ -8,7 +8,6 @@ import pytest
 
 from baselines.t1_direct.adapter import build_t1_prompt
 from baselines.t3_smolagents.adapter import _state_to_status
-from baselines._framework_common import build_prompt as build_t2_prompt
 from common.task_schema import TaskSpec
 
 
@@ -68,16 +67,7 @@ def test_t1_prompt_contains_the_complete_task_json():
     assert "### FILE: py/prep/_10_stage.py" in prompt
 
 
-def test_t2_prompt_names_the_real_completion_tool():
-    request = {
-        "task": {"task_id": "t2", "natural_language_requirement": "build"},
-    }
-    prompt = build_t2_prompt(request, "[]", "{}")
-    assert "check_project_completeness" in prompt
-    assert "finalize_project" not in prompt
-
-
-def test_t2_system_prompt_names_the_real_completion_tool():
+def test_t2_system_prompt_does_not_preload_reference_paths():
     from baselines.t2_langgraph.adapter import build_t2_system_prompt
 
     task = TaskSpec.from_dict(
@@ -90,8 +80,10 @@ def test_t2_system_prompt_names_the_real_completion_tool():
         }
     )
     prompt = build_t2_system_prompt(task, _EmptySkillReader())
-    assert "check_project_completeness" in prompt
-    assert "finalize_project" not in prompt
+    assert "check_project_completeness" not in prompt
+    assert "search_knowledge" not in prompt
+    assert "Reference case FILES" not in prompt
+    assert "list_reference_files" in prompt
 
 
 def test_t4_native_skill_loader_preserves_all_skill_groups(tmp_path: Path):
@@ -123,29 +115,49 @@ def test_t5_role_budgets_are_derived_from_the_shared_step_budget():
         allocate_role_budgets(2)
 
 
-def test_t5_all_roles_receive_the_same_controlled_tool_interface():
+def test_t5_mounts_skills_and_uses_crewai_delegation(tmp_path: Path):
     from baselines.t5_crewai import adapter
 
-    if not hasattr(adapter, "build_role_tools"):
-        pytest.fail("T5 has no shared role-tool builder")
-    groups = adapter.build_role_tools(lambda function: function.__name__)
-    names = {role: set(tools) for role, tools in groups.items()}
-    assert set(names) == {"researcher", "engineer", "reviewer"}
-    expected = {
-        "list_skills", "read_skill", "read_skill_reference", "list_reference_files",
-        "write_file", "search_skill_cases", "read_candidate_file",
-        "check_project_completeness", "search_knowledge",
-    }
-    assert all(tool_names == expected for tool_names in names.values())
-
-
-def test_t5_agents_explicitly_disable_code_execution_bypass():
-    """CrewAI defaults are not part of the frozen adapter contract."""
-
-    from baselines.t5_crewai import adapter
-
+    source = Path(adapter.__file__).read_text(encoding="utf-8")
+    assert "skills=[skills_dir]" in source
+    assert "Delegate work to coworker" in source
+    assert "Ask question to coworker" in source
+    assert not hasattr(adapter, "build_role_tools")
+    assert not hasattr(adapter, "write_file")
     assert adapter.AGENT_POLICY["allow_code_execution"] is False
-    assert adapter.AGENT_POLICY["allow_delegation"] is False
+    assert adapter.AGENT_POLICY["allow_delegation"] is True
+    root = tmp_path / "candidate"
+    written = adapter._materialize_file_blocks(
+        "### FILE: py/prep/main.py\nprint(1)\n### FILE: ../escape.py\nprint(2)\n",
+        root,
+    )
+    assert written == ["py/prep/main.py"]
+    assert (root / "py" / "prep" / "main.py").read_text(encoding="utf-8").startswith("print(1)")
+    assert not (tmp_path / "escape.py").exists()
+
+
+def test_t5_file_blocks_drop_markdown_fences(tmp_path: Path):
+    from baselines.t5_crewai import adapter
+
+    root = tmp_path / "candidate"
+    written = adapter._materialize_file_blocks(
+        "### FILE: py/prep/_1_control.py\n"
+        "```python\n"
+        "print('[OK] _1_control.setup_control')\n"
+        "```\n"
+        "\n"
+        "---\n"
+        "### FILE: py/prep/_10_stage.py\n"
+        "print('[OK] _10_stage.build_stage')\n",
+        root,
+    )
+    assert written == ["py/prep/_1_control.py", "py/prep/_10_stage.py"]
+    control = (root / "py" / "prep" / "_1_control.py").read_text(encoding="utf-8")
+    stage = (root / "py" / "prep" / "_10_stage.py").read_text(encoding="utf-8")
+    compile(control, "_1_control.py", "exec")
+    compile(stage, "_10_stage.py", "exec")
+    assert "```" not in control
+    assert "---" not in control
 
 
 def test_t5_role_wall_clock_budgets_fit_generation_budget():
@@ -157,41 +169,26 @@ def test_t5_role_wall_clock_budgets_fit_generation_budget():
     assert timeouts is None
 
 
-def test_t3_authorized_imports_do_not_allow_direct_filesystem_paths():
-    from baselines.t3_smolagents.adapter import ADDITIONAL_AUTHORIZED_IMPORTS
-
-    assert ADDITIONAL_AUTHORIZED_IMPORTS == ["json"]
-
-
-def test_t3_tool_errors_are_recoverable(tmp_path: Path):
-    """A bad tool argument must return TOOL_ERROR, not crash CodeAgent."""
-
+def test_t3_uses_the_code_agent_interpreter_for_files():
     from baselines.t3_smolagents import adapter
 
-    class _Reader:
-        def read_skill(self, _skill_id):
-            raise FileNotFoundError("missing skill")
-
-    adapter._STATE["candidate_root"] = tmp_path / "candidate"
-    adapter._STATE["candidate_root"].mkdir()
-    adapter._STATE["skill_reader"] = _Reader()
-
-    assert adapter.read_skill("missing").startswith("TOOL_ERROR:")
-    assert adapter.write_file("../escape.py", "x").startswith("TOOL_ERROR:")
-    assert adapter.write_file("py/prep/main.py", "x")
+    source = Path(adapter.__file__).read_text(encoding="utf-8")
+    assert adapter.ADDITIONAL_AUTHORIZED_IMPORTS == ["json", "pathlib"]
+    assert "os" not in adapter.ADDITIONAL_AUTHORIZED_IMPORTS
+    assert "tools=[]" in source
+    assert not hasattr(adapter, "write_file")
+    assert not hasattr(adapter, "read_skill")
 
 
-def test_t4_and_t5_write_errors_are_recoverable(tmp_path: Path):
-    """All tool-loop adapters use the same model-visible error contract."""
+def test_t4_write_stays_on_the_framework_file_editor(tmp_path: Path):
+    """Candidate writes go through OpenHands file_editor, not a harness tool."""
 
     from baselines.t4_openhands import adapter as t4
-    from baselines.t5_crewai import adapter as t5
 
-    for adapter in (t4, t5):
-        adapter._STATE["candidate_root"] = tmp_path / adapter.__name__.split(".")[-2]
-        adapter._STATE["candidate_root"].mkdir()
-        write = t4._write_file if adapter is t4 else t5.write_file
-        assert write("../escape.py", "x").startswith("TOOL_ERROR:")
+    source = Path(t4.__file__).read_text(encoding="utf-8")
+    assert "def _write_file" not in source
+    assert not hasattr(t4, "_write_file")
+    assert tmp_path.is_dir()
 
 
 def test_shared_reference_and_candidate_read_tools_fail_closed(tmp_path: Path):

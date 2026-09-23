@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from common.paths import resolve_run_root
+from common.run_layout import is_run_manifest, result_tree
 
 
 ARCHITECTURES = ("T1", "T2", "T3", "T4", "T5", "T6")
@@ -54,6 +55,8 @@ RUN_COLUMNS = (
     ("aggregation_eligible", "纳入统计"),
     ("excluded_reason", "排除原因"),
     ("architecture_id", "架构"),
+    ("result_tree", "结果树"),
+    ("source", "题目名称"),
     ("seed", "Seed"),
     ("bridge_type", "桥型"),
     ("difficulty", "难度"),
@@ -196,6 +199,8 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
         raise NotADirectoryError(root)
     records: list[dict[str, Any]] = []
     for manifest_path in sorted(root.rglob("manifest.json"), key=lambda item: item.as_posix()):
+        if not is_run_manifest(root, manifest_path):
+            continue
         run_dir = manifest_path.parent
         manifest = _read_json(manifest_path)
         task = _read_json(run_dir / "input.json")
@@ -256,6 +261,8 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
             "aggregation_eligible": aggregation_eligible,
             "excluded_reason": excluded_reason,
             "architecture_id": manifest.get("architecture_id") or trace.get("architecture_id"),
+            "result_tree": result_tree(run_dir, root),
+            "source": _first_text(reference.get("source")),
             "seed": manifest.get("seed", trace.get("seed")),
             "bridge_type": task.get("bridge_type") or reference.get("bridge_type"),
             "difficulty": task.get("difficulty"),
@@ -449,7 +456,7 @@ def _per_bridge_detail_sheet(
     which produced 3457 rows with ~96% empty cells.
     """
 
-    headers = ["桥型", "任务形式", "架构", "Seed", "分数", "合格", "编译", "建模", "验证"]
+    headers = ["架构", "桥型", "任务形式", "Seed", "分数", "合格", "编译", "建模", "验证"]
     sheet.append(headers)
 
     # Pre-compute the path of each record so we can show the directory
@@ -457,12 +464,10 @@ def _per_bridge_detail_sheet(
     path_lookup = {id(rec): rec.get("run_dir", "") for rec in records}
 
     def _sort_key(rec: dict[str, Any]) -> tuple:
-        # Bridge is the primary sort key; form then arch then seed keep
-        # rows in a predictable, citation-friendly order.
         return (
+            rec.get("architecture_id", ""),
             rec.get("bridge_type", ""),
             rec.get("dataset_form", ""),
-            rec.get("architecture_id", ""),
             rec.get("seed", 0),
         )
 
@@ -472,9 +477,9 @@ def _per_bridge_detail_sheet(
             continue  # incomplete record, skip rather than emit blank row
         score = rec.get(score_key)
         sheet.append([
+            rec.get("architecture_id", ""),
             rec.get("bridge_type", ""),
             rec.get("dataset_form", ""),
-            rec.get("architecture_id", ""),
             rec.get("seed", ""),
             round(score, 2) if isinstance(score, (int, float)) else None,
             "✅" if rec.get("complete_success") else "❌",
@@ -747,7 +752,7 @@ def _group_summary_sheet(sheet, key_to_col: dict[str, int], last_row: int) -> No
 
     sheet.append(
         [
-            "桥型", "任务形式", "架构", "纳入统计记录数", "源码评分有效N",
+            "架构", "桥型", "任务形式", "纳入统计记录数", "源码评分有效N",
             "源码评分均值", "完整成功率", "生成失败数", "超时数", "平均总耗时(s)",
         ]
     )
@@ -757,15 +762,15 @@ def _group_summary_sheet(sheet, key_to_col: dict[str, int], last_row: int) -> No
         "elapsed_s",
     )}
     row_index = 2
-    for bridge_type in BRIDGE_TYPES:
-        for form in DATASET_FORMS:
-            for architecture in ARCHITECTURES:
-                sheet.cell(row_index, 1, bridge_type)
-                sheet.cell(row_index, 2, form)
-                sheet.cell(row_index, 3, architecture)
+    for architecture in ARCHITECTURES:
+        for bridge_type in BRIDGE_TYPES:
+            for form in DATASET_FORMS:
+                sheet.cell(row_index, 1, architecture)
+                sheet.cell(row_index, 2, bridge_type)
+                sheet.cell(row_index, 3, form)
                 base = (
-                    f"{refs['bridge_type']},$A{row_index},{refs['dataset_form']},$B{row_index},"
-                    f"{refs['architecture_id']},$C{row_index},{refs['aggregation_eligible']},1"
+                    f"{refs['architecture_id']},$A{row_index},{refs['bridge_type']},$B{row_index},"
+                    f"{refs['dataset_form']},$C{row_index},{refs['aggregation_eligible']},1"
                 )
                 sheet.cell(row_index, 4, f"=COUNTIFS({base})")
                 scored = base + f",{refs['model_score_status']},\"evaluated\""
@@ -1030,6 +1035,73 @@ def _frozen_config_sheet(sheet, records: list[dict[str, Any]]) -> None:
     _add_table(sheet, "FrozenConfig")
 
 
+def _result_tree_sheet(sheet, records: list[dict[str, Any]]) -> None:
+    """One row per architecture / bridge / form bucket matching the on-disk tree."""
+
+    sheet.append([
+        "架构", "桥型", "任务形式", "记录数", "纳入统计", "结果树", "示例运行目录",
+    ])
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for record in records:
+        key = (
+            record.get("architecture_id") or "",
+            record.get("bridge_type") or "",
+            record.get("dataset_form") or "",
+        )
+        item = grouped.setdefault(
+            key,
+            {
+                "count": 0,
+                "eligible": 0,
+                "tree": record.get("result_tree") or "",
+                "run_dir": record.get("run_dir") or "",
+            },
+        )
+        item["count"] += 1
+        item["eligible"] += int(record.get("aggregation_eligible") == 1)
+        if not item["tree"]:
+            item["tree"] = record.get("result_tree") or ""
+    for architecture in ARCHITECTURES:
+        for bridge_type in BRIDGE_TYPES:
+            for form in DATASET_FORMS:
+                key = (architecture, bridge_type, form)
+                item = grouped.get(key)
+                if item is None:
+                    continue
+                tree = item["tree"] or "/".join(key)
+                sheet.append([
+                    architecture,
+                    bridge_type,
+                    form,
+                    item["count"],
+                    item["eligible"],
+                    tree,
+                    item["run_dir"],
+                ])
+    extra = [
+        (key, item)
+        for key, item in grouped.items()
+        if key[0] not in ARCHITECTURES
+        or key[1] not in BRIDGE_TYPES
+        or key[2] not in DATASET_FORMS
+    ]
+    for key, item in sorted(extra, key=lambda pair: tuple(str(value) for value in pair[0])):
+        sheet.append([
+            *key,
+            item["count"],
+            item["eligible"],
+            item["tree"] or "/".join(str(value) for value in key),
+            item["run_dir"],
+        ])
+    _style_header(sheet)
+    _style_body(sheet)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.sheet_view.showGridLines = False
+    _fit_columns(sheet, maximum=48)
+    _add_table(sheet, "ResultTree")
+
+
 def _notes_sheet(sheet, runs_root: Path, records: list[dict[str, Any]]):
     sheet.merge_cells("A1:B1")
     sheet["A1"] = "OSIS 智能体框架对比实验结果"
@@ -1046,6 +1118,7 @@ def _notes_sheet(sheet, runs_root: Path, records: list[dict[str, Any]]):
         ("数据来源", "每个 run_dir 的 manifest/input/frozen_config/evaluation/model_score/timer/backend_status JSON"),
         ("正式统计范围", "仅纳入 split=train/test 且未标记 infrastructure_failure 的记录；开发/冒烟记录保留在明细但不进入汇总"),
         ("任务形式", "数据集 full/gen/edit 映射为内部 whole/module/modify，表格统一展示 full/gen/edit"),
+        ("结果目录结构", "runs/<sweep>/<架构>/<桥型>/<任务形式>/<实验目录>；导出同时识别旧的扁平目录。"),
         ("完整成功", "同时满足候选工程、PyOSIS建模、求解收敛、验证、CLI评分和产物完整性；求解失败总分为 0。"),
         ("注意", "框架对比和分组汇总只统计纳入正式统计的记录；空白源码分表示没有可用 CLI 评分，不等同于 0 分。"),
     ]
@@ -1110,6 +1183,7 @@ def export_results(runs_root: Path, output: Path) -> Path:
     per_bridge_static = workbook.create_sheet("每桥型-父仓库")
     group_summary = workbook.create_sheet("分组汇总")
     runs_sheet = workbook.create_sheet("运行明细")
+    tree_sheet = workbook.create_sheet("结果目录")
     failure_sheet = workbook.create_sheet("失败汇总")
     frozen_sheet = workbook.create_sheet("冻结配置")
     notes = workbook.create_sheet("说明")
@@ -1144,6 +1218,7 @@ def export_results(runs_root: Path, output: Path) -> Path:
         title="每桥型-父仓库",
     )
     _group_summary_sheet(group_summary, key_to_col, last_row)
+    _result_tree_sheet(tree_sheet, records)
     _failure_sheet(failure_sheet, records)
     _frozen_config_sheet(frozen_sheet, records)
     _notes_sheet(notes, Path(runs_root), records)

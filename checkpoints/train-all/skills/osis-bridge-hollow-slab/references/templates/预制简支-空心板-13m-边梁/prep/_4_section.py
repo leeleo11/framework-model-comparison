@@ -18,13 +18,13 @@ def build_sections(engine: OSISEngine) -> None:
     engine.section.get(3).set_offset("Middle", 0.1575, "Top", 0.0)
     engine.section.get(3).set_mesh(0, 0.1)
     # 添加或修改纵向钢筋（按输入方式分发）
-    engine.section.get(1).add_rebar_l(1, "LINEA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
+    engine.section.get(1).add_rebar_l(1, "LineA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
     # 添加或修改抗剪钢筋（按类型分发）
-    engine.section.get(1).add_rebar_s("SHEARSTIRRUP", 2, 0.0, 0.000314159)
-    engine.section.get(2).add_rebar_l(1, "LINEA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
-    engine.section.get(2).add_rebar_s("SHEARSTIRRUP", 2, 0.0, 0.000314159)
-    engine.section.get(3).add_rebar_l(1, "LINEA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
-    engine.section.get(3).add_rebar_s("SHEARSTIRRUP", 2, 0.0, 0.000314159)
+    engine.section.get(1).add_rebar_s("ShearStirrup", 2, 0.0, 0.000314159)
+    engine.section.get(2).add_rebar_l(1, "LineA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
+    engine.section.get(2).add_rebar_s("ShearStirrup", 2, 0.0, 0.000314159)
+    engine.section.get(3).add_rebar_l(1, "LineA", 2, "Left", 0.7, "Bottom", 0.05, 12, 0.1, "D16")
+    engine.section.get(3).add_rebar_s("ShearStirrup", 2, 0.0, 0.000314159)
 
 if __name__ == "__main__":
     from _0_engine import engine

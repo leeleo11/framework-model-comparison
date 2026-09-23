@@ -43,18 +43,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from common.paths import resolve_args_parent_repo  # noqa: E402
+from common.run_layout import candidate_run_dirs, lookup_source, run_dir_for  # noqa: E402
 from scripts.run_all_parallel import BASE_AI_PORT, ARCHITECTURES, build_command  # noqa: E402
 
 
 FORM_ORDER = ("full", "gen", "edit")
-BRIDGE_SKILL_TO_TYPE = {
-    "osis-bridge-cantilever-box": "cantilever_box",
-    "osis-bridge-conventional-box": "conventional_box",
-    "osis-bridge-hollow-slab": "hollow_slab",
-    "osis-bridge-precast-small-box": "precast_small_box",
-    "osis-bridge-precast-t-girder": "precast_t_girder",
-    "osis-bridge-rigid-frame-box": "rigid_frame",
-}
 
 
 def run_is_terminal(run_dir: Path) -> bool:
@@ -69,15 +62,22 @@ def run_is_terminal(run_dir: Path) -> bool:
     return (run_dir / "evaluation.json").is_file() and (run_dir / "manifest.json").is_file()
 
 
-def run_dir_for(runs_dir: Path, bridge: str, form: str, index: int,
-                architecture: str, seed: int) -> Path:
-    bridge_type = BRIDGE_SKILL_TO_TYPE.get(
-        bridge, bridge.removeprefix("osis-bridge-").replace("-", "_")
+def cell_is_terminal(
+    runs_dir: Path,
+    bridge: str,
+    form: str,
+    index: int,
+    architecture: str,
+    seed: int,
+    source: str = "",
+) -> bool:
+    return any(
+        run_is_terminal(path)
+        for path in candidate_run_dirs(
+            runs_dir, bridge, form, index, architecture, seed, source=source
+        )
     )
-    return runs_dir / (
-        f"{bridge_type}__{form}__{index:03d}__"
-        f"{architecture}__seed{seed}"
-    )
+
 
 def _dir_mb(path: Path) -> float:
     if not path.is_dir():
@@ -97,25 +97,71 @@ def archive_stale(target: Path, archive_dir: Path) -> str | None:
     return str(destination)
 
 
+def archive_stale_cell(
+    runs_dir: Path,
+    bridge: str,
+    form: str,
+    index: int,
+    architecture: str,
+    seed: int,
+    archive_dir: Path,
+    source: str = "",
+) -> list[str]:
+    moved: list[str] = []
+    for target in candidate_run_dirs(
+        runs_dir, bridge, form, index, architecture, seed, source=source
+    ):
+        archived = archive_stale(target, archive_dir)
+        if archived:
+            moved.append(archived)
+    return moved
+
+
+_PROJECT_DIR_NAMES = (
+    "candidate_project",
+    "osis_project",
+    "secmesh",
+    "Model",
+    "Result",
+    "Break",
+    "Check",
+    "Error",
+    "MutiCase",
+    "Temperary",
+    "image",
+)
+
+
+def _drop_path(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    before = path.stat().st_size / 1048576 if path.is_file() else _dir_mb(path)
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
+    return before
+
+
 def slim_run_dir(run_dir: Path) -> dict[str, float]:
-    """Remove reproducible bulk after scoring; keep everything audit-bearing.
+    """Drop project files after scoring. Keep scores, traces, and T6 session logs.
 
-    Removed (all recoverable from the snapshot / re-derivable by re-running):
-    - the T6 sandbox skill-snapshot copy and staged tree (≈20 MB/run)
-    - ``__pycache__`` everywhere
-    - native build artifacts (meshes, Model/Result binaries) at the run root
+    Removed once the cell has been scored:
+    - candidate project, reference project, and ``*.sis``
+    - OSIS native trees (``osis_project``, meshes, Model/Result, and the rest)
+    - the T6 sandbox skill-snapshot copy
+    - ``__pycache__``
 
-    Kept: candidate project, session log + opencode.db (behaviour audit),
-    every scoring JSON, manifest, frozen config, scorer provenance.
+    Kept: evaluation and other scoring JSON, manifest, frozen config, traces,
+    and the T6 ``xdg-data`` session log.
     """
 
-    removed = {"sandbox": 0.0, "pycache": 0.0, "native_artifacts": 0.0}
+    removed = {"sandbox": 0.0, "pycache": 0.0, "projects": 0.0}
     gen = run_dir / "generated"
     sandbox = gen / ".osisai_t6"
     if sandbox.is_dir():
         before = _dir_mb(sandbox)
-        # keep xdg-data (session log + db), drop everything else in the sandbox
-        for child in sandbox.iterdir():
+        for child in list(sandbox.iterdir()):
             if child.name == "xdg-data":
                 continue
             if child.is_dir():
@@ -123,17 +169,15 @@ def slim_run_dir(run_dir: Path) -> dict[str, float]:
             else:
                 child.unlink(missing_ok=True)
         removed["sandbox"] = round(before - _dir_mb(sandbox), 1)
-    for cache in run_dir.rglob("__pycache__"):
-        before = _dir_mb(cache)
-        shutil.rmtree(cache, ignore_errors=True)
-        removed["pycache"] += round(before, 1)
-    for name in ("osis_project", "secmesh", "Model", "Result", "Break", "Check",
-                 "Error", "MutiCase", "Temperary", "image"):
-        heavy = run_dir / name
-        if heavy.is_dir():
-            before = _dir_mb(heavy)
-            shutil.rmtree(heavy, ignore_errors=True)
-            removed["native_artifacts"] += round(before, 1)
+    for cache in list(run_dir.rglob("__pycache__")):
+        removed["pycache"] += round(_drop_path(cache), 1)
+    for name in _PROJECT_DIR_NAMES:
+        removed["projects"] += _drop_path(run_dir / name)
+        removed["projects"] += _drop_path(gen / name)
+    removed["projects"] += _drop_path(run_dir / "scorer_private" / "reference_project")
+    for sis in list(run_dir.glob("*.sis")) + list(gen.glob("*.sis")):
+        removed["projects"] += _drop_path(sis)
+    removed["projects"] = round(removed["projects"], 1)
     return removed
 
 
@@ -187,6 +231,13 @@ def main(argv: list[str] | None = None) -> int:
     runs_dir = PROJECT_ROOT / "runs" / args.label
     runs_dir.mkdir(parents=True, exist_ok=True)
     stale_archive = args.archive_root / f"{args.label}-stale-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    source_cache: dict[tuple[str, str, int], str] = {}
+
+    def _source(bridge: str, form: str, index: int) -> str:
+        key = (bridge, form, index)
+        if key not in source_cache:
+            source_cache[key] = lookup_source(args.parent_repo, bridge, form, index)
+        return source_cache[key]
 
     results: list[dict] = []
     started = time.monotonic()
@@ -209,10 +260,15 @@ def main(argv: list[str] | None = None) -> int:
         ns.temperature = args.temperature
         ns.reasoning_effort = args.reasoning_effort
         ns.log_dir = PROJECT_ROOT / "tmp" / f"campaign-{args.label}" / "logs"
-        target = run_dir_for(runs_dir, bridge, form, args.index, arch, seed)
-        archive_stale(target, stale_archive)
+        archive_stale_cell(
+            runs_dir, bridge, form, args.index, arch, seed, stale_archive,
+            source=_source(bridge, form, args.index),
+        )
         outcome = run_one(ns, arch)
-        run_dir = run_dir_for(runs_dir, bridge, form, args.index, arch, seed)
+        run_dir = run_dir_for(
+            runs_dir, bridge, form, args.index, arch, seed,
+            source=_source(bridge, form, args.index),
+        )
         slim = {}
         try:
             # failed runs hold the same reproducible bulk — slim them too
@@ -235,8 +291,14 @@ def main(argv: list[str] | None = None) -> int:
         pending: list[tuple[str, str, str, int]] = []
         skipped = 0
         for arch, bridge, phase_form, seed in matrix:
-            target = run_dir_for(runs_dir, bridge, phase_form, args.index, arch, seed)
-            if args.resume and run_is_terminal(target):
+            target = run_dir_for(
+                runs_dir, bridge, phase_form, args.index, arch, seed,
+                source=_source(bridge, phase_form, args.index),
+            )
+            if args.resume and cell_is_terminal(
+                runs_dir, bridge, phase_form, args.index, arch, seed,
+                source=_source(bridge, phase_form, args.index),
+            ):
                 skipped += 1
                 outcome = {
                     "architecture": arch,
@@ -315,10 +377,14 @@ def main(argv: list[str] | None = None) -> int:
         # interrupted runs.  This is the gate that prevents gen/edit from
         # starting while full (or the preceding phase) is incomplete.
         incomplete = [
-            str(run_dir_for(runs_dir, arch_bridge, phase_form, args.index, arch, seed))
+            str(run_dir_for(
+                runs_dir, arch_bridge, phase_form, args.index, arch, seed,
+                source=_source(arch_bridge, phase_form, args.index),
+            ))
             for arch, arch_bridge, phase_form, seed in matrix
-            if not run_is_terminal(
-                run_dir_for(runs_dir, arch_bridge, phase_form, args.index, arch, seed)
+            if not cell_is_terminal(
+                runs_dir, arch_bridge, phase_form, args.index, arch, seed,
+                source=_source(arch_bridge, phase_form, args.index),
             )
         ]
         phase_summary = {

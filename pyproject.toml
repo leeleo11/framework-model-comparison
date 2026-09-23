@@ -16,7 +16,7 @@ dependencies = [
 # Per-framework environments are created by scripts/setup_framework_envs.py
 # into .venvs/<framework>/ to keep dependency pins isolated from the T2 stack.
 t3 = ["smolagents==1.26.0", "openai"]
-t4 = ["openhands-sdk==1.44.1"]
+t4 = ["openhands-sdk==1.44.1", "openhands-tools==1.44.1"]
 t5 = ["crewai==1.15.18"]
 
 [tool.pytest.ini_options]

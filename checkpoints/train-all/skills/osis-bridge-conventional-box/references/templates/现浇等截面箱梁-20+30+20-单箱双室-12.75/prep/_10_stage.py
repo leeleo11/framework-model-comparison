@@ -25,7 +25,7 @@ def build_stages(engine: OSISEngine) -> None:
     engine.stage.get(4).define_loadcase(1, 1, "", "梯度升温_梯度升温")
     engine.stage.get(4).define_loadcase(1, 1, "", "梯度降温_梯度降温")
     # 激活分析工况,分析工况默认在每个施工阶段的静力工况之后，不同分析工况无先后顺序
-    engine.stage.get(4).define_analysis(1, "MODAL")
+    engine.stage.get(4).define_analysis(1, "MODAL", "")
     engine.stage.get(4).define_analysis(1, "SETL", "支座沉降荷载工况")
     engine.stage.get(4).define_analysis(1, "LTM", "荷载转换质量_二期_二期")
     engine.stage.get(4).define_analysis(1, "LIVE", "移动荷载工况")

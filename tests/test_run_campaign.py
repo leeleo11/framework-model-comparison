@@ -16,6 +16,7 @@ def test_run_dir_for_uses_stable_matrix_name(tmp_path: Path):
         "T6",
         2,
     )
+    assert path == tmp_path / "T6" / "cantilever_box" / "gen" / "cantilever_box__gen__003__T6__seed2"
     assert path.name == "cantilever_box__gen__003__T6__seed2"
 
 
