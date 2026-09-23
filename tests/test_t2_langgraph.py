@@ -161,7 +161,7 @@ def test_t2_generate_runs_langgraph_react_and_writes_candidate(
         _task(),
         _skills(tmp_path),
         workspace,
-        config=T2Config.from_env(api_key="test-key", max_steps=4),
+        config=T2Config.from_env(api_key="test-key"),
     )
 
     assert candidate == workspace / "candidate_project"
@@ -233,7 +233,7 @@ def test_t2_generate_writes_react_transcript(
         _task(),
         _skills(tmp_path),
         workspace,
-        config=T2Config.from_env(api_key="test-key", max_steps=4),
+        config=T2Config.from_env(api_key="test-key"),
     )
 
     lines = [

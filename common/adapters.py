@@ -20,7 +20,6 @@ class AdapterSpec:
     framework_version: str
     mounting_mode: str
     interaction_mode: str
-    max_steps: int | None
     framework_import: str | None
 
 
@@ -43,7 +42,6 @@ class ArchitectureAdapter:
             "framework_version": self.spec.framework_version,
             "mounting_mode": self.spec.mounting_mode,
             "interaction_mode": self.spec.interaction_mode,
-            "max_steps": self.spec.max_steps,
             "task": task.to_dict(),
             "skill_bundle_sha256": skill_adapter.skill_bundle_hash(),
             "output_contract": {
@@ -100,12 +98,12 @@ class ArchitectureAdapter:
 
 
 ADAPTER_SPECS = {
-    "T1": AdapterSpec("T1", "direct-one-shot", "direct-one-shot-v1", "fixed_bundle", "one_shot", 1, None),
-    "T2": AdapterSpec("T2", "langgraph-react", "langgraph==1.2.11/langchain==1.3.18", "generic_tools", "progressive", 200, "langgraph"),
-    "T3": AdapterSpec("T3", "smolagents-codeact", "smolagents==1.26.0", "generic_tools", "progressive", 200, "smolagents"),
-    "T4": AdapterSpec("T4", "openhands-codeact", "openhands-sdk==1.44.1", "native", "progressive", 200, "openhands"),
-    "T5": AdapterSpec("T5", "crewai-roles", "crewai==1.15.18", "generic_tools", "progressive", 200, "crewai"),
-    "T6": AdapterSpec("T6", "osis-native", "local-clean-snapshot", "native", "stateful", 200, None),
+    "T1": AdapterSpec("T1", "direct-one-shot", "direct-one-shot-v1", "fixed_bundle", "one_shot", None),
+    "T2": AdapterSpec("T2", "langgraph-react", "langgraph==1.2.11/langchain==1.3.18", "generic_tools", "progressive", "langgraph"),
+    "T3": AdapterSpec("T3", "smolagents-codeact", "smolagents==1.26.0", "generic_tools", "progressive", "smolagents"),
+    "T4": AdapterSpec("T4", "openhands-codeact", "openhands-sdk==1.44.1", "native", "progressive", "openhands"),
+    "T5": AdapterSpec("T5", "crewai-roles", "crewai==1.15.18", "generic_tools", "progressive", "crewai"),
+    "T6": AdapterSpec("T6", "osis-native", "local-clean-snapshot", "native", "stateful", None),
 }
 
 

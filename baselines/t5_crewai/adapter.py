@@ -2,9 +2,9 @@
 
 Verified against crewai 1.15.18 installed source: ``crewai.llm.LLM``
 (llm.py:369 -> OpenAICompletion) with ``custom_openai=True`` pins the
-chat-completions API (no /v1/responses upgrade, completion.py:1772); loop cap
-is ``Agent.max_iter`` (default 25) and per-task wall clock is
-``Agent.max_execution_time`` (agent/core.py:244); telemetry is disabled via
+chat-completions API (no /v1/responses upgrade, completion.py:1772). CrewAI's
+own ``Agent.max_iter`` defaults to 25; the adapter overrides that default
+because this experiment has no step cap. Telemetry is disabled via
 env vars read in crewai/telemetry/telemetry.py:162-170.
 """
 
@@ -23,13 +23,14 @@ os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
 
 from baselines._framework_common import (  # noqa: E402
+    LIBRARY_LOOP_BOUND,
     candidate_root,
     finish,
     load_request,
     normalize_tokens,
-    resolve_max_steps,
     resolve_max_tokens,
 )
+from common.execution_feedback import observe_candidate, run_feedback_loop
 from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 
 _STATE: dict[str, Any] = {}
@@ -44,6 +45,8 @@ AGENT_POLICY = {
 
 _FILE_BLOCK = re.compile(r"^### FILE:\s*(?P<path>.+?)\s*$", re.MULTILINE)
 _FENCE_LINE = re.compile(r"^```[A-Za-z0-9_+-]*\s*$")
+_SKILL_NAME = re.compile(r"(?m)^name:\s*(?P<name>\S+)\s*$")
+_RESOURCE_ROOTS = ("references", "scripts", "assets")
 
 
 def _package_version(name: str) -> str:
@@ -84,42 +87,60 @@ def _crew_metrics(agents: Any) -> dict[str, Any]:
     }
 
 
-def allocate_role_budgets(max_steps: int) -> dict[str, int]:
-    """Split the shared model-call budget across CrewAI's three roles.
-
-    Research and review receive fixed proportions; engineering receives the
-    remainder so the sum is exactly the caller's budget.  At least one call is
-    reserved for each role because CrewAI runs them sequentially.
-    """
-
-    total = int(max_steps)
-    if total < 3:
-        raise ValueError("T5 requires at least three model calls (one per role)")
-    researcher = max(1, int(total * 0.25 + 0.5))
-    reviewer = max(1, int(total * 0.15 + 0.5))
-    engineer = total - researcher - reviewer
-    if engineer < 1:
-        # This branch is only reachable for very small totals; preserve the
-        # three-role invariant while keeping the sum equal to ``total``.
-        reviewer = max(1, total - researcher - 1)
-        engineer = total - researcher - reviewer
-    return {
-        "researcher": researcher,
-        "engineer": engineer,
-        "reviewer": reviewer,
-    }
-
-
-def allocate_role_timeouts(generation_timeout_s: float) -> dict[str, int]:
-    """Placeholder kept for interface compatibility; always returns None.
-
-    Per-role ``max_execution_time`` is intentionally removed so CrewAI never
-    prematurely kills a role before the outer runner's one-hour generation
-    deadline (the only real governor).  The Agent constructors below skip
-    ``max_execution_time`` entirely when this returns None.
-    """
-
+def _find_skill_dir(skills_dir: Path, skill_name: str) -> Path | None:
+    for child in Path(skills_dir).iterdir():
+        skill_md = child / "SKILL.md"
+        if not child.is_dir() or not skill_md.is_file():
+            continue
+        if child.name == skill_name:
+            return child
+        match = _SKILL_NAME.search(skill_md.read_text(encoding="utf-8", errors="replace"))
+        if match and match.group("name") == skill_name:
+            return child
     return None
+
+
+def read_skill_resource(skills_dir: Path, skill_name: str, relative_path: str = "") -> str:
+    """List resource names, or return one file under references, scripts, or assets.
+
+    CrewAI's load_skill stops at the SKILL.md body. This is the resource step
+    of the same progressive disclosure: names first, then a single file.
+    """
+
+    skill_dir = _find_skill_dir(skills_dir, skill_name)
+    if skill_dir is None:
+        names = sorted(
+            child.name
+            for child in Path(skills_dir).iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        )
+        available = ", ".join(names) or "none"
+        return f"Skill {skill_name!r} is not available. Available skills: {available}."
+    relative = relative_path.strip().replace("\\", "/")
+    if not relative:
+        lines: list[str] = []
+        for folder in _RESOURCE_ROOTS:
+            base = skill_dir / folder
+            if not base.is_dir():
+                continue
+            files = sorted(
+                path.relative_to(base).as_posix()
+                for path in base.rglob("*")
+                if path.is_file()
+            )
+            if files:
+                lines.append(f"{folder}/: " + ", ".join(files))
+        return "\n".join(lines) or "No resource files."
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] not in _RESOURCE_ROOTS:
+        return "Path must be one file inside references/, scripts/, or assets/."
+    target = (skill_dir / path).resolve()
+    root = (skill_dir / path.parts[0]).resolve()
+    if not target.is_relative_to(root):
+        return "Path must be one file inside references/, scripts/, or assets/."
+    if not target.is_file():
+        return f"File not found: {path.as_posix()}"
+    return target.read_text(encoding="utf-8", errors="replace")
 
 
 def _canonical_markers() -> str:
@@ -170,10 +191,19 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     from crewai import Agent, Crew, Process, Task
     from crewai.llm import LLM
+    from crewai.tools import tool
 
     root = candidate_root(request)
     _STATE["candidate_root"] = root
     skills_dir = Path(request["skills_dir"])
+
+    @tool("read_skill_resource")
+    def read_skill_resource_tool(skill_name: str, relative_path: str = "") -> str:
+        """List resource file names, or read one file under references, scripts, or assets."""
+
+        return read_skill_resource(skills_dir, skill_name, relative_path)
+
+    resource_tools = [read_skill_resource_tool]
 
     llm = LLM(
         model=request["model"],
@@ -187,34 +217,30 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
            if request.get("reasoning_effort") else {}),
     )
 
-    role_budgets = allocate_role_budgets(
-        resolve_max_steps(request.get("max_steps"), default=200))
-    role_timeouts = allocate_role_timeouts(
-        float(request.get("generation_timeout_s") or 3600.0)
-    )
-
     # Skills are mounted through CrewAI's own skills= path.  Delegation is on,
-    # so kickoff adds the official tools "Delegate work to coworker" and
-    # "Ask question to coworker".  No custom tools.
+    # so kickoff adds "Delegate work to coworker" and "Ask question to coworker".
+    # load_skill returns SKILL.md only. read_skill_resource is the missing
+    # resource step: list names, then read one file. CrewAI's default max_iter
+    # is 25; override it so a role is not cut off before the wall clock.
     researcher = Agent(
         role="Bridge case researcher",
         goal="Load the relevant mounted skills and produce a written design brief.",
         backstory="Expert in OSIS/PYOSIS bridge modelling conventions. Uses the crew's own load_skill tool.",
-        llm=llm, max_iter=role_budgets["researcher"],
+        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=resource_tools,
         **AGENT_POLICY, verbose=False,
     )
     engineer = Agent(
         role="OSIS bridge model engineer",
         goal="Write every canonical candidate-project file as FILE blocks, then repair the reviewer's fix list.",
         backstory="Precise bridge-engineering coder producing the 13 canonical files from loaded skills.",
-        llm=llm, max_iter=role_budgets["engineer"],
+        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=resource_tools,
         **AGENT_POLICY, verbose=False,
     )
     reviewer = Agent(
         role="Candidate reviewer",
         goal="Check the engineer's FILE blocks against the mounted skills and return a concrete fix list.",
         backstory="Rigorous QA agent. Names defects and may ask the engineer through the crew's delegation tool.",
-        llm=llm, max_iter=role_budgets["reviewer"],
+        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=resource_tools,
         **AGENT_POLICY, verbose=False,
     )
 
@@ -223,8 +249,11 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     research_task = Task(
         description=(
             "Use the crew's load_skill tool to read the relevant mounted "
-            "skills. You may also use the crew's own collaboration tools, "
-            "\"Delegate work to coworker\" and \"Ask question to coworker\". "
+            "skills. load_skill returns the SKILL.md body. To see a template, "
+            "call read_skill_resource with an empty path for the file names, "
+            "then call it again with one path under references/, scripts/, "
+            "or assets/. You may also use \"Delegate work to coworker\" and "
+            "\"Ask question to coworker\". "
             "Return a design brief the engineer can implement "
             "(structure, materials, key loads).\n\nTask:\n" + task_json
         ),
@@ -234,7 +263,9 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     engineering_task = Task(
         description=(
             "From the research brief and the mounted skills, write the "
-            "complete candidate project. Output exactly one block for each "
+            "complete candidate project. Read a template with "
+            "read_skill_resource before writing a file that has one. "
+            "Output exactly one block for each "
             "canonical file, in this order. Every block starts with its "
             "marker line and contains the complete file. Put nothing else "
             "outside the blocks.\n\n" + markers + "\n\nTask:\n" + task_json
@@ -283,8 +314,6 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         "framework_version": _package_version("crewai"),
         "model": request["model"],
         "agents": ["researcher", "engineer", "reviewer"],
-        "role_budgets": role_budgets,
-        "role_timeouts": role_timeouts,
         "model_calls": 0,
         "tool_calls": 0,
         "stop_reason": None,
@@ -304,12 +333,50 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
         usage = getattr(result, "token_usage", None)
         if usage is not None:
             meta["tokens"] = normalize_tokens(usage)
-        exhausted = any(
-            role in meta.get("role_iterations", {})
-            and meta["role_iterations"][role] >= role_budgets[role]
-            for role in role_budgets
-        )
-        meta["stop_reason"] = "max_steps" if exhausted else "completed"
+        meta["stop_reason"] = "completed"
+        if request.get("execution_feedback") and request.get("parent_repo"):
+            deadline = time.monotonic() + float(request.get("generation_timeout_s") or 3600.0)
+            parent_repo = Path(request["parent_repo"])
+
+            def _observe(scratch: Path) -> str | None:
+                return observe_candidate(
+                    root,
+                    scratch,
+                    parent_repo=parent_repo,
+                    deadline_monotonic=deadline,
+                )
+
+            def _resume(observation: str) -> None:
+                revision = Task(
+                    description=observation + "\n\n" + markers,
+                    expected_output="The candidate project as one FILE block per canonical file.",
+                    agent=engineer,
+                )
+                revised = Crew(
+                    agents=[engineer],
+                    tasks=[revision],
+                    process=Process.sequential,
+                    verbose=False,
+                    skills=[skills_dir],
+                ).kickoff()
+                rewritten = _materialize_file_blocks(str(getattr(revised, "raw", "")), root)
+                meta["files_written"] = rewritten
+                meta.update(_crew_metrics(agents))
+
+            feedback = run_feedback_loop(
+                candidate=root,
+                scratch_root=Path(request["workspace"]) / "build_feedback",
+                deadline_monotonic=deadline,
+                observe=_observe,
+                resume=_resume,
+            )
+            meta["execution_feedback"] = feedback
+            if feedback.get("stop_reason") == "task_timeout":
+                meta["status"] = "failed"
+                meta["stop_reason"] = "task_timeout"
+                meta["error"] = "generation exceeded the total task budget"
+            elif feedback.get("stop_reason"):
+                meta["stop_reason"] = feedback["stop_reason"]
     except Exception as exc:  # noqa: BLE001
         meta.update(_crew_metrics(agents))
         import traceback

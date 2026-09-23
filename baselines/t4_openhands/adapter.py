@@ -24,13 +24,14 @@ from typing import Any
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
 from baselines._framework_common import (  # noqa: E402
+    LIBRARY_LOOP_BOUND,
     candidate_root,
     finish,
     load_request,
     normalize_tokens,
-    resolve_max_steps,
     resolve_max_tokens,
 )
+from common.execution_feedback import observe_candidate, run_feedback_loop
 from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 
 
@@ -210,16 +211,16 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
     conversation = Conversation(
         agent=agent,
         workspace=str(root),
-        max_iteration_per_run=resolve_max_steps(request.get("max_steps"), default=200),
+        # OpenHands defaults this to 500. The experiment does not stop on steps.
+        max_iteration_per_run=LIBRARY_LOOP_BOUND,
         visualizer=None,
         # The candidate workspace is an experiment artifact.  Do not let the
         # SDK's default conversation cleanup remove or detach it before the
         # outer runner materializes and scores the generated files.
         delete_on_close=False,
         # Default stuck detection is aggressive for a 13-file write loop and
-        # tripped STUCK before any file was written. Relax it generously so the
-        # agent uses its full run-scoped step budget; the outer subprocess kill still
-        # bounds the run at the total budget.
+        # tripped STUCK before any file was written. Relax it so a repeated
+        # action is not cut off before the wall-clock deadline.
         stuck_detection_thresholds={
             "action_observation": 24,
             "action_error": 12,
@@ -246,6 +247,35 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         conversation.send_message(prompt)
         conversation.run()
         status = str(getattr(conversation.state, "execution_status", ""))
+        if (
+            request.get("execution_feedback")
+            and request.get("parent_repo")
+            and "STUCK" not in status
+            and "ERROR" not in status
+        ):
+            deadline = time.monotonic() + float(request.get("generation_timeout_s") or 3600.0)
+            parent_repo = Path(request["parent_repo"])
+
+            def _observe(scratch: Path) -> str | None:
+                return observe_candidate(
+                    root,
+                    scratch,
+                    parent_repo=parent_repo,
+                    deadline_monotonic=deadline,
+                )
+
+            def _resume(observation: str) -> None:
+                conversation.send_message(observation)
+                conversation.run()
+
+            meta["execution_feedback"] = run_feedback_loop(
+                candidate=root,
+                scratch_root=Path(request["workspace"]) / "build_feedback",
+                deadline_monotonic=deadline,
+                observe=_observe,
+                resume=_resume,
+            )
+            status = str(getattr(conversation.state, "execution_status", ""))
         meta["execution_status"] = status
         events = list(getattr(conversation.state, "events", []) or [])
         event_summary = summarize_events(events)
@@ -261,6 +291,13 @@ def _run_generation_impl(request: dict[str, Any]) -> dict[str, Any]:
         else:
             meta["status"] = "completed"
             meta["stop_reason"] = status.lower() or "completed"
+        feedback_stop = (meta.get("execution_feedback") or {}).get("stop_reason")
+        if feedback_stop == "task_timeout":
+            meta["status"] = "failed"
+            meta["stop_reason"] = "task_timeout"
+            meta["error"] = "generation exceeded the total task budget"
+        elif feedback_stop:
+            meta["stop_reason"] = feedback_stop
         # best-effort unified token extraction
         try:
             stats = getattr(conversation, "conversation_stats", None) or getattr(

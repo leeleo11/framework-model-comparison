@@ -103,18 +103,6 @@ def test_t4_native_skill_loader_preserves_all_skill_groups(tmp_path: Path):
     assert skills == ["R", "K", "A"]
 
 
-def test_t5_role_budgets_are_derived_from_the_shared_step_budget():
-    from baselines.t5_crewai import adapter
-
-    if not hasattr(adapter, "allocate_role_budgets"):
-        pytest.fail("T5 has no shared role-budget allocator")
-    allocate_role_budgets = adapter.allocate_role_budgets
-    assert allocate_role_budgets(24) == {"researcher": 6, "engineer": 14, "reviewer": 4}
-    assert allocate_role_budgets(200) == {"researcher": 50, "engineer": 120, "reviewer": 30}
-    with pytest.raises(ValueError):
-        allocate_role_budgets(2)
-
-
 def test_t5_mounts_skills_and_uses_crewai_delegation(tmp_path: Path):
     from baselines.t5_crewai import adapter
 
@@ -126,6 +114,17 @@ def test_t5_mounts_skills_and_uses_crewai_delegation(tmp_path: Path):
     assert not hasattr(adapter, "write_file")
     assert adapter.AGENT_POLICY["allow_code_execution"] is False
     assert adapter.AGENT_POLICY["allow_delegation"] is True
+    skill_root = tmp_path / "skills" / "demo-skill"
+    (skill_root / "references").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("---\nname: demo-skill\n---\nbody\n", encoding="utf-8")
+    (skill_root / "references" / "prep.py").write_text("template = 1\n", encoding="utf-8")
+    assert "prep.py" in adapter.read_skill_resource(tmp_path / "skills", "demo-skill", "")
+    assert adapter.read_skill_resource(
+        tmp_path / "skills", "demo-skill", "references/prep.py"
+    ) == "template = 1\n"
+    assert "Path must be one file" in adapter.read_skill_resource(
+        tmp_path / "skills", "demo-skill", "../SKILL.md"
+    )
     root = tmp_path / "candidate"
     written = adapter._materialize_file_blocks(
         "### FILE: py/prep/main.py\nprint(1)\n### FILE: ../escape.py\nprint(2)\n",
@@ -160,13 +159,13 @@ def test_t5_file_blocks_drop_markdown_fences(tmp_path: Path):
     assert "---" not in control
 
 
-def test_t5_role_wall_clock_budgets_fit_generation_budget():
+def test_t5_does_not_set_a_per_role_execution_limit():
     from baselines.t5_crewai import adapter
 
-    # Per-role max_execution_time is intentionally removed; the function
-    # now returns None so CrewAI never kills a role prematurely.
-    timeouts = adapter.allocate_role_timeouts(600)
-    assert timeouts is None
+    source = Path(adapter.__file__).read_text(encoding="utf-8")
+    assert "max_execution_time" not in source
+    assert not hasattr(adapter, "allocate_role_timeouts")
+    assert not hasattr(adapter, "allocate_role_budgets")
 
 
 def test_t3_uses_the_code_agent_interpreter_for_files():

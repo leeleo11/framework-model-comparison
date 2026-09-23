@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from baselines._framework_common import (  # noqa: E402
+    LIBRARY_LOOP_BOUND,
     candidate_root,
     finish,
     load_request,
     normalize_tokens,
-    resolve_max_steps,
     resolve_max_tokens,
 )
+from common.execution_feedback import observe_candidate, run_feedback_loop
 from common.modeling_pipeline import CANONICAL_PROJECT_FILES
 
 
@@ -197,7 +198,8 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     agent = CodeAgent(
         tools=[],
         model=model,
-        max_steps=resolve_max_steps(request.get("max_steps"), default=200),
+        # smolagents defaults this to 20. The experiment does not stop on steps.
+        max_steps=LIBRARY_LOOP_BOUND,
         verbosity_level=LogLevel.ERROR,
         additional_authorized_imports=ADDITIONAL_AUTHORIZED_IMPORTS,
         return_full_result=True,
@@ -218,15 +220,49 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     try:
         result = agent.run(prompt)
         meta.update(_result_metrics(result))
-        meta["agent_state"] = getattr(result, "state", None) and str(getattr(result, "state"))
         usage = getattr(result, "token_usage", None)
         if usage is not None:
             meta["tokens"] = normalize_tokens(usage)
+        if request.get("execution_feedback") and request.get("parent_repo"):
+            deadline = time.monotonic() + float(request.get("generation_timeout_s") or 3600.0)
+            parent_repo = Path(request["parent_repo"])
+
+            def _observe(scratch: Path) -> str | None:
+                return observe_candidate(
+                    root,
+                    scratch,
+                    parent_repo=parent_repo,
+                    deadline_monotonic=deadline,
+                )
+
+            def _resume(observation: str) -> None:
+                nonlocal result
+                result = agent.run(observation, reset=False)
+                meta["model_calls"] += _result_metrics(result)["model_calls"]
+                meta["tool_calls"] += _result_metrics(result)["tool_calls"]
+                meta["framework_steps"] += _result_metrics(result)["framework_steps"]
+
+            meta["execution_feedback"] = run_feedback_loop(
+                candidate=root,
+                scratch_root=Path(request["workspace"]) / "build_feedback",
+                deadline_monotonic=deadline,
+                observe=_observe,
+                resume=_resume,
+            )
+        meta["agent_state"] = getattr(result, "state", None) and str(getattr(result, "state"))
         meta["status"], meta_error = _state_to_status(meta["agent_state"])
         meta["protocol_normalized_responses"] = model.normalized_response_count
         if meta_error:
             meta["error"] = meta_error
-        meta["stop_reason"] = "max_steps" if meta["status"] == "failed" else "completed"
+        feedback_stop = (meta.get("execution_feedback") or {}).get("stop_reason")
+        if feedback_stop == "task_timeout":
+            meta["status"] = "failed"
+            meta["stop_reason"] = "task_timeout"
+            meta["error"] = "generation exceeded the total task budget"
+        else:
+            meta["stop_reason"] = feedback_stop or (
+                "completed" if meta["status"] == "completed" else "error"
+            )
     except Exception as exc:  # noqa: BLE001
         meta["status"] = "failed"
         meta["error_type"] = type(exc).__name__

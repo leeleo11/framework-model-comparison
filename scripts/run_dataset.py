@@ -92,8 +92,6 @@ FROZEN_POST_GENERATION_RESERVE_S = 1800.0
 # toolchain allows itself.  The remaining reserve covers unified PyOSIS
 # execution and source scoring.  For an explicit shorter override, the
 # generation cap is reduced to preserve that reserve.
-# No step cap either: see FROZEN_MAX_TOKENS above.
-FROZEN_MAX_STEPS = 0
 BRIDGE_SKILLS = {
     "cantilever_box": "osis-bridge-cantilever-box",
     "conventional_box": "osis-bridge-conventional-box",
@@ -731,7 +729,6 @@ def _write_frozen_config(
         "max_tokens": FROZEN_MAX_TOKENS,
         "weknora_enabled": knowledge_search_enabled(),
         "model_timeout_s": FROZEN_MODEL_TIMEOUT_S,
-        "max_steps": FROZEN_MAX_STEPS,
         "generation_step_timeout_s": (
             _effective_generation_timeout_s(configured_total_timeout)
             if configured_total_timeout is not None
@@ -951,13 +948,14 @@ def main(argv: list[str] | None = None) -> int:
                     base_url=args.base_url, model=args.model,
                     temperature=args.temperature, max_tokens=FROZEN_MAX_TOKENS,
                     request_timeout_s=max(1.0, min(FROZEN_MODEL_TIMEOUT_S, remaining)),
-                    max_steps=FROZEN_MAX_STEPS,
                     reasoning_effort=args.reasoning_effort,
                 ),
                 deadline_monotonic=min(
                     generation_deadline,
                     total_deadline,
                 ),
+                execution_feedback=True,
+                parent_repo=args.parent_repo,
             )
             meta_path = workspace / "t2_generation.json"
             _require_completed(
@@ -981,12 +979,12 @@ def main(argv: list[str] | None = None) -> int:
                         "base_url": args.base_url, "model": args.model,
                         "max_tokens": FROZEN_MAX_TOKENS,
                         "request_timeout_s": FROZEN_MODEL_TIMEOUT_S,
-                        "max_steps": FROZEN_MAX_STEPS,
                         "generation_timeout_s": remaining,
                         "total_timeout_s": task_spec.total_timeout_s,
                         "subtask_timeout_s": task_spec.subtask_timeout_s,
                         "temperature": args.temperature,
                         "reasoning_effort": args.reasoning_effort,
+                        "execution_feedback": architecture != "T6",
                     },
                     ensure_ascii=False, indent=2,
                 ),

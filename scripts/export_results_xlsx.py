@@ -66,7 +66,6 @@ RUN_COLUMNS = (
     ("temperature", "温度"),
     ("max_tokens", "最大Token"),
     ("model_timeout_s", "单次模型时限(s)"),
-    ("max_steps", "最大步数"),
     ("run_status", "运行状态"),
     ("complete_success", "完整成功"),
     ("quality_score", "综合质量分"),
@@ -272,7 +271,6 @@ def collect_run_records(runs_root: Path) -> list[dict[str, Any]]:
             "temperature": frozen.get("temperature"),
             "max_tokens": frozen.get("max_tokens"),
             "model_timeout_s": frozen.get("model_timeout_s"),
-            "max_steps": frozen.get("max_steps"),
             "run_status": timer.get("status") or trace.get("status"),
             "complete_success": _bool_number(evaluation.get("complete_success")),
             "quality_score": evaluation.get("quality_score"),
@@ -1005,7 +1003,7 @@ def _failure_sheet(sheet, records: list[dict[str, Any]]) -> None:
 
 def _frozen_config_sheet(sheet, records: list[dict[str, Any]]) -> None:
     sheet.append([
-        "模型", "模型接口", "温度", "最大Token", "单次模型时限(s)", "最大步数",
+        "模型", "模型接口", "温度", "最大Token", "单次模型时限(s)",
         "总任务时限(s)", "数据集", "Skill包SHA256", "记录数", "纳入统计数", "示例运行目录",
     ])
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -1016,7 +1014,6 @@ def _frozen_config_sheet(sheet, records: list[dict[str, Any]]) -> None:
             record.get("temperature"),
             record.get("max_tokens"),
             record.get("model_timeout_s"),
-            record.get("max_steps"),
             record.get("total_timeout_s"),
             record.get("split") or "",
             record.get("skill_bundle_sha256") or "",

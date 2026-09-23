@@ -100,7 +100,6 @@ def _make_run(
             "base_url": "http://example/v1",
             "temperature": 0.0,
             "max_tokens": 65536,
-            "max_steps": 200,
             "total_timeout_s": 300,
             "skills_snapshot": {"sha256": "abc"},
         },

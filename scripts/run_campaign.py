@@ -149,11 +149,13 @@ def slim_run_dir(run_dir: Path) -> dict[str, float]:
     Removed once the cell has been scored:
     - candidate project, reference project, and ``*.sis``
     - OSIS native trees (``osis_project``, meshes, Model/Result, and the rest)
+    - intermediate compile and PyOSIS scratch under ``generated/build_feedback``
     - the T6 sandbox skill-snapshot copy
     - ``__pycache__``
 
     Kept: evaluation and other scoring JSON, manifest, frozen config, traces,
-    and the T6 ``xdg-data`` session log.
+    the feedback excerpts already stored on the generation record, and the
+    T6 ``xdg-data`` session log.
     """
 
     removed = {"sandbox": 0.0, "pycache": 0.0, "projects": 0.0}
@@ -175,9 +177,31 @@ def slim_run_dir(run_dir: Path) -> dict[str, float]:
         removed["projects"] += _drop_path(run_dir / name)
         removed["projects"] += _drop_path(gen / name)
     removed["projects"] += _drop_path(run_dir / "scorer_private" / "reference_project")
+    removed["projects"] += _drop_path(gen / "build_feedback")
     for sis in list(run_dir.glob("*.sis")) + list(gen.glob("*.sis")):
         removed["projects"] += _drop_path(sis)
     removed["projects"] = round(removed["projects"], 1)
+    return removed
+
+
+def sweep_finished_feedback(runs_dir: Path) -> int:
+    """Delete intermediate feedback scratch for every cell that has already been scored.
+
+    A campaign process started before this cleanup existed will not slim its
+    own cell. The next process sweeps those leftovers. A cell still generating
+    has no evaluation yet, so its scratch is left in place.
+    """
+
+    removed = 0
+    if not runs_dir.is_dir():
+        return removed
+    for path in runs_dir.rglob("build_feedback"):
+        if path.parent.name != "generated" or not path.is_dir():
+            continue
+        cell = path.parent.parent
+        if (cell / "evaluation.json").is_file() and (cell / "manifest.json").is_file():
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
     return removed
 
 
@@ -230,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runs_dir = PROJECT_ROOT / "runs" / args.label
     runs_dir.mkdir(parents=True, exist_ok=True)
+    sweep_finished_feedback(runs_dir)
     stale_archive = args.archive_root / f"{args.label}-stale-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     source_cache: dict[tuple[str, str, int], str] = {}
 

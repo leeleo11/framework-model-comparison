@@ -35,24 +35,11 @@ def load_request(argv: list[str] | None = None) -> dict[str, Any]:
     return json.loads(Path(args.request).read_text(encoding="utf-8"))
 
 
-# A frozen limit of ``0`` means "no limit" in this protocol: wall-clock is the
-# sole termination mechanism, so every architecture is measured on what it can
-# build in the budget rather than on how verbose a single response happened to
-# be.  Framework APIs require a concrete integer, so unbounded limits are
-# expressed as a value far above anything reachable inside the one-hour
-# generation gate; the time gate still stops the run.
-UNBOUNDED_STEPS = 100_000
-UNBOUNDED_TOKENS = 0  # sentinel meaning "omit the field"; see resolve_max_tokens
-
-
-def resolve_max_steps(value: Any, *, default: int) -> int:
-    """Map the protocol's ``0``/unset to the framework's unbounded value."""
-
-    try:
-        steps = int(value)
-    except (TypeError, ValueError):
-        return default
-    return steps if steps > 0 else UNBOUNDED_STEPS
+# These libraries refuse an omitted loop bound and install a small default
+# (smolagents 20, CrewAI 25, LangGraph recursion 25, OpenHands 500). The
+# experiment has no step cap. This value only disables that default. A run
+# ends when the agent finishes or the wall-clock timeout fires.
+LIBRARY_LOOP_BOUND = 1_000_000
 
 
 def resolve_max_tokens(value: Any) -> int | None:

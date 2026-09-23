@@ -58,23 +58,6 @@ OPENCODE_EXE = OPENCODE_DIR / "opencode.exe"
 T6_PORT = int(os.environ.get("T6_AI_PORT", "4097"))
 T6_BASE = f"http://127.0.0.1:{T6_PORT}"
 DEFAULT_MAX_TOKENS = 65536
-DEFAULT_MAX_STEPS = 200
-
-
-def resolve_max_steps(value: Any, *, default: int) -> int:
-    """Map the protocol's ``0``/unset limit to "no step limit".
-
-    Every architecture is measured on what it can build inside the wall-clock
-    budget, not on how verbose a single response happened to be.  OpenCode
-    needs a concrete integer, so unbounded is expressed as a value far above
-    anything reachable in the one-hour generation gate.
-    """
-
-    try:
-        steps = int(value)
-    except (TypeError, ValueError):
-        return default
-    return steps if steps > 0 else 100_000
 
 
 def resolve_max_tokens(value: Any) -> int | None:
@@ -369,7 +352,7 @@ def _prepare_isolated_env(
                 },
             }
         },
-        "model": f"comparison/{model}{('#' + reasoning_effort) if reasoning_effort else ''}",
+        "model": f"comparison/{model}",
         "default_agent": "build",
         "permission": {"*": "allow"},
     }
@@ -832,8 +815,6 @@ def generate_t6(
         # The task hand-off activates the packaged normal OSIS-AI workflow;
         # unlike T2--T5, T6 must not be reduced to a generic write-file loop.
         prompt = _build_t6_prompt(request)
-        max_steps = resolve_max_steps(
-            request.get("max_steps"), default=DEFAULT_MAX_STEPS)
         generation_timeout = float(
             request.get("generation_timeout_s")
             or request.get("request_timeout_s", 3600.0)
@@ -851,10 +832,9 @@ def generate_t6(
         def _chat() -> None:
             try:
                 selected_model = request["model"]
-                if request.get("reasoning_effort"):
-                    selected_model += f"#{request['reasoning_effort']}"
                 client.chat(
                     sid, prompt, provider_id="comparison", model_id=selected_model,
+                    variant=request.get("reasoning_effort") or None,
                     timeout=generation_timeout,
                 )
             except BaseException as exc:  # noqa: BLE001 - report to outer run
@@ -886,7 +866,6 @@ def generate_t6(
         event_thread.start()
 
         idle = False
-        step_count = 0
         event_deadline = time.monotonic() + generation_timeout
         while True:
             if chat_errors and event_queue.empty():
@@ -905,18 +884,11 @@ def generate_t6(
             if isinstance(inner, dict):
                 event_records.append(inner)
             etype = inner.get("type") if isinstance(inner, dict) else ""
-            if etype == "message.part.updated":
-                step_count += 1
             if etype == "session.idle":
                 idle = True
                 break
             if etype in {"session.error", "session.compiled"}:
                 meta["error"] = f"opencode session aborted: {etype}"
-                break
-            if max_steps and step_count > max_steps * 3:
-                # Only a finite (non-zero) step budget can trip this; an
-                # unlimited run is bounded by the wall-clock deadline above.
-                meta["error"] = f"opencode session exceeded ~{max_steps} steps ({step_count} parts)"
                 break
         chat_thread.join(timeout=5)
         # A healthy event stream may still be blocked after session.idle or an
@@ -924,12 +896,10 @@ def generate_t6(
         # isolated server during final cleanup.
         event_thread.join(timeout=0.2)
 
-        # NO automated nudging: the protocol is one input, zero evaluator
-        # intervention.  If the agent ends its turn planning-only (AGENTS.md
-        # prescribes 规划先行), that is a legitimate measured outcome of the
-        # native workflow under a single-message hand-off — the same outcome
-        # any architecture could produce.  Automated "continue" prompts would
-        # be evaluator feedback no T1-T5 run receives.
+        # T6 does not get a harness retry. The parent OSIS-AI session already
+        # returns command and OSIS errors to the model, and the mounted
+        # osis-engine skill repairs them before the session goes idle.
+        # Another prompt here would be evaluator intervention.
 
         if monitor is not None:
             monitor.stop()

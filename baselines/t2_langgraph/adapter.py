@@ -37,9 +37,11 @@ from common.skill_adapter import SkillAdapter
 from common.task_schema import TaskSpec
 from common.tool_policy import tool_error
 from baselines._framework_common import (
+    LIBRARY_LOOP_BOUND,
     merge_token_usage,
     list_reference_files as _list_reference_files_shared,
 )
+from common.execution_feedback import observe_candidate, run_feedback_loop
 
 
 DEFAULT_BASE_URL = "http://47.92.150.231/v1"
@@ -47,15 +49,7 @@ DEFAULT_MODEL = FORMAL_MODEL_ID
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 12000
 DEFAULT_REQUEST_TIMEOUT_S = 180.0
-DEFAULT_MAX_STEPS = 24
 REASONING_EFFORTS = ("low", "medium", "high")
-
-
-def _recursion_limit(max_steps: int, default_steps: int = 10_000) -> int:
-    """LangGraph recursion cap; ``0`` means "no step limit" (wall-clock only)."""
-
-    steps = int(max_steps) if max_steps else default_steps
-    return max(4, steps * 2 + 2)
 
 
 @dataclass(frozen=True)
@@ -73,7 +67,6 @@ class T2Config:
     max_tokens: int = DEFAULT_MAX_TOKENS
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S
     reasoning_effort: str | None = None
-    max_steps: int = DEFAULT_MAX_STEPS
 
     @classmethod
     def from_env(
@@ -85,7 +78,6 @@ class T2Config:
         temperature: float | None = None,
         max_tokens: int | None = None,
         request_timeout_s: float | None = None,
-        max_steps: int | None = None,
         reasoning_effort: str | None = None,
     ) -> "T2Config":
         resolved_key = api_key or os.environ.get("OSIS_MODEL_API_KEY") or os.environ.get(
@@ -117,11 +109,6 @@ class T2Config:
                 else float(
                     os.environ.get("OSIS_MODEL_REQUEST_TIMEOUT_S", DEFAULT_REQUEST_TIMEOUT_S)
                 )
-            ),
-            max_steps=(
-                max_steps
-                if max_steps is not None
-                else int(os.environ.get("T2_MAX_STEPS", DEFAULT_MAX_STEPS))
             ),
             reasoning_effort=(
                 reasoning_effort
@@ -612,6 +599,8 @@ def generate(
     *,
     config: T2Config | None = None,
     deadline_monotonic: float | None = None,
+    execution_feedback: bool = False,
+    parent_repo: Path | None = None,
 ) -> Path:
     """Run the real LangGraph ReAct graph and return its candidate project."""
 
@@ -632,7 +621,6 @@ def generate(
         "base_url": config.base_url,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        "max_steps": config.max_steps,
         "status": "running",
         "model_calls": 0,
         "tool_calls": 0,
@@ -658,25 +646,50 @@ def generate(
         )
         transcript = _TranscriptWriter(workspace / "t2_transcript.jsonl")
         final_state: dict[str, Any] | None = None
-        try:
+        budget_exceeded = False
+
+        def _run_graph(messages: list[Any]) -> None:
+            nonlocal final_state, budget_exceeded
             seen_messages = 0
-            budget_exceeded = False
             for chunk in graph.stream(
-                {"messages": [{"role": "user", "content": task.natural_language_requirement}]},
-                config={"recursion_limit": _recursion_limit(config.max_steps)},
+                {"messages": messages},
+                config={"recursion_limit": LIBRARY_LOOP_BOUND},
                 stream_mode="values",
             ):
-                messages = chunk.get("messages", []) if isinstance(chunk, dict) else []
-                for message in messages[seen_messages:]:
+                chunk_messages = chunk.get("messages", []) if isinstance(chunk, dict) else []
+                for message in chunk_messages[seen_messages:]:
                     transcript.add_message(message)
-                seen_messages = len(messages)
+                seen_messages = len(chunk_messages)
                 final_state = chunk
-                # Hard wall-clock budget: the in-process graph must abort at the
-                # experiment's total budget (recursion_limit alone allows up to
-                # ~25 steps x 600s => far beyond 1800s).
+                # LangGraph's own default recursion limit is 25, so the stream
+                # passes a bound that cannot fire before this deadline.
                 if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
                     budget_exceeded = True
                     break
+
+        try:
+            _run_graph([{"role": "user", "content": task.natural_language_requirement}])
+            if execution_feedback and parent_repo is not None and not budget_exceeded:
+                def _observe(scratch: Path) -> str | None:
+                    return observe_candidate(
+                        candidate_root,
+                        scratch,
+                        parent_repo=parent_repo,
+                        deadline_monotonic=deadline_monotonic,
+                    )
+
+                def _resume(observation: str) -> None:
+                    prior = list(final_state.get("messages", [])) if isinstance(final_state, dict) else []
+                    prior.append({"role": "user", "content": observation})
+                    _run_graph(prior)
+
+                metadata_payload["execution_feedback"] = run_feedback_loop(
+                    candidate=candidate_root,
+                    scratch_root=workspace / "build_feedback",
+                    deadline_monotonic=deadline_monotonic,
+                    observe=_observe,
+                    resume=_resume,
+                )
         finally:
             transcript.close()
         messages = final_state.get("messages", []) if isinstance(final_state, dict) else []
@@ -687,13 +700,18 @@ def generate(
         metadata_payload["message_count"] = len(messages)
         if transcript.token_usage:
             metadata_payload["tokens"] = transcript.token_usage
-        if budget_exceeded:
+        feedback = metadata_payload.get("execution_feedback") or {}
+        if budget_exceeded or feedback.get("stop_reason") == "task_timeout":
             metadata_payload["status"] = "failed"
             metadata_payload["error"] = "generation exceeded the total task budget"
             metadata_payload["stop_reason"] = "task_timeout"
         else:
             metadata_payload["status"] = "completed"
-            metadata_payload["stop_reason"] = transcript.last_finish_reason or "completed"
+            metadata_payload["stop_reason"] = (
+                feedback.get("stop_reason")
+                or transcript.last_finish_reason
+                or "completed"
+            )
     except Exception as exc:
         if transcript is not None:
             metadata_payload["model_calls"] = transcript.model_calls
