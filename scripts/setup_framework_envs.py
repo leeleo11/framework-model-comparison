@@ -13,10 +13,10 @@ frozen_config.json).
 Framework pins come from ``common/adapters.py`` (single source of truth):
 
     T1  direct one-shot      (no framework; system python + requests)
-    T2  langgraph==1.2.11 / langchain==1.3.18   (system python, already installed)
+    T2  langgraph==1.2.11 / langchain==1.4.2   (system python, already installed)
     T3  smolagents==1.26.0
-    T4  openhands-sdk==1.44.1
-    T5  crewai==1.15.18 / crewai-tools==1.15.18
+    T4  openhands-sdk==1.49.2 / openhands-tools==1.49.5
+    T5  crewai==1.15.22 / crewai-tools==1.15.22
     T6  OSIS-AI native       (no pip framework; parent-repo tooling)
 
 Usage::
@@ -58,7 +58,8 @@ FRAMEWORKS: dict[str, FrameworkEnv] = {
         "main",
         (
             "langgraph==1.2.11",
-            "langchain==1.3.18",
+            "langchain==1.4.2",
+            "langchain-openai==1.6.2",
             "openpyxl>=3.1",
             "requests>=2.31",
             "PyYAML>=6.0",
@@ -66,9 +67,9 @@ FRAMEWORKS: dict[str, FrameworkEnv] = {
         ),
         "langgraph",
     ),
-    "t3": FrameworkEnv("t3", ("smolagents==1.26.0", "openai"), "smolagents"),
-    "t4": FrameworkEnv("t4", ("openhands-sdk==1.44.1",), "openhands"),
-    "t5": FrameworkEnv("t5", ("crewai==1.15.18", "crewai-tools==1.15.18"), "crewai"),
+    "t3": FrameworkEnv("t3", ("smolagents==1.26.0", "openai==2.54.0"), "smolagents"),
+    "t4": FrameworkEnv("t4", ("openhands-sdk==1.49.2", "openhands-tools==1.49.5"), "openhands"),
+    "t5": FrameworkEnv("t5", ("crewai==1.15.22", "crewai-tools==1.15.22"), "crewai"),
 }
 
 
@@ -163,7 +164,7 @@ def record_system_envs(environments: dict[str, object]) -> dict[str, object]:
     }
     environments["t2"] = {
         "framework": "t2",
-        "packages": ["langgraph==1.2.11", "langchain==1.3.18"],
+        "packages": ["langgraph==1.2.11", "langchain==1.4.2"],
         "python": str(python),
         "status": t2.get("status", "unknown"),
         "version": t2.get("version"),

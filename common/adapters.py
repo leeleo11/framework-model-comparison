@@ -99,10 +99,10 @@ class ArchitectureAdapter:
 
 ADAPTER_SPECS = {
     "T1": AdapterSpec("T1", "direct-one-shot", "direct-one-shot-v1", "fixed_bundle", "one_shot", None),
-    "T2": AdapterSpec("T2", "langgraph-react", "langgraph==1.2.11/langchain==1.3.18", "generic_tools", "progressive", "langgraph"),
+    "T2": AdapterSpec("T2", "langgraph-react", "langgraph==1.2.11/langchain==1.4.2", "generic_tools", "progressive", "langgraph"),
     "T3": AdapterSpec("T3", "smolagents-codeact", "smolagents==1.26.0", "generic_tools", "progressive", "smolagents"),
-    "T4": AdapterSpec("T4", "openhands-codeact", "openhands-sdk==1.44.1", "native", "progressive", "openhands"),
-    "T5": AdapterSpec("T5", "crewai-roles", "crewai==1.15.18/crewai-tools==1.15.18", "generic_tools", "progressive", "crewai"),
+    "T4": AdapterSpec("T4", "openhands-codeact", "openhands-sdk==1.49.2", "native", "progressive", "openhands"),
+    "T5": AdapterSpec("T5", "crewai-roles", "crewai==1.15.22/crewai-tools==1.15.22", "generic_tools", "progressive", "crewai"),
     "T6": AdapterSpec("T6", "osis-native", "local-clean-snapshot", "native", "stateful", None),
 }
 

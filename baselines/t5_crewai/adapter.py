@@ -1,6 +1,6 @@
 """T5 CrewAI adapter (runs inside .venvs/t5).
 
-Verified against crewai 1.15.18 installed source: ``crewai.llm.LLM``
+Verified against crewai 1.15.22 installed source: ``crewai.llm.LLM``
 (llm.py:369 -> OpenAICompletion) with ``custom_openai=True`` pins the
 chat-completions API (no /v1/responses upgrade, completion.py:1772). CrewAI's
 own ``Agent.max_iter`` defaults to 25; the adapter overrides that default

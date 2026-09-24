@@ -103,10 +103,10 @@ uv run python scripts\setup_framework_envs.py --base-python $py
 装出来的东西（`common\adapters.py` 是版本权威来源）：
 
 ```
-main  langgraph==1.2.11  langchain==1.3.18  openpyxl  requests  PyYAML  pytest
-t3    smolagents==1.26.0
-t4    openhands-sdk==1.44.1
-t5    crewai==1.15.18
+main  langgraph==1.2.11  langchain==1.4.2  openpyxl  requests  PyYAML  pytest
+t3    smolagents==1.26.0  openai==2.54.0
+t4    openhands-sdk==1.49.2  openhands-tools==1.49.5
+t5    crewai==1.15.22  crewai-tools==1.15.22
 ```
 
 可选参数：`--only {main,t3,t4,t5}`、`--dry-run`。

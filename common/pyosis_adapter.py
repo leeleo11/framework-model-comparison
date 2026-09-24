@@ -375,6 +375,84 @@ class PyOSISAdapter:
             check=False,
         )
 
+    def solve_live(
+        self,
+        run_dir: Path,
+        *,
+        solve: bool = False,
+        timeout_s: float | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Solve the model already loaded in OSIS. Do not rerun ``main.py``.
+
+        The parent train runner scores the session's project and then calls
+        ``OSISEngine.solve()`` on that live model. Rebuilding from ``main.py``
+        would reject a project the session had already written with L0 or L1.
+        """
+
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if not self.execution_enabled:
+            return self.write_not_configured(run_dir)
+        if not solve:
+            status = self._status(
+                status="succeeded",
+                execution_enabled=True,
+                model_created=True,
+                solver_converged=False,
+                validation_passed=True,
+                solve_requested=False,
+                solve_status="not_requested",
+                solver_version=self.solver_version,
+                rebuild=False,
+            )
+            self._write_json(run_dir, "backend_status.json", status)
+            self._write_json(run_dir, "build_status.json", status)
+            return status
+
+        started = time.monotonic()
+        budget = float(timeout_s if timeout_s is not None else self.timeout_s)
+        if deadline_monotonic is not None:
+            budget = min(budget, max(0.01, deadline_monotonic - started))
+        wait_s = None if deadline_monotonic is None else max(0.0, deadline_monotonic - time.monotonic())
+        try:
+            with osis_runtime_lock(timeout_s=wait_s):
+                from pyosis.core.client import set_osis_port
+                from pyosis.core.engine import OSISEngine
+
+                set_osis_port(int(os.environ.get("OSIS_HTTP_PORT", "18080")))
+                OSISEngine().solve(timeout=budget)
+            status = self._status(
+                status="succeeded",
+                execution_enabled=True,
+                model_created=True,
+                solver_converged=True,
+                validation_passed=True,
+                solve_requested=True,
+                solve_status="succeeded",
+                elapsed_s=round(time.monotonic() - started, 3),
+                solver_version=self.solver_version,
+                rebuild=False,
+            )
+        except Exception as exc:
+            status = self._status(
+                status="failed",
+                execution_enabled=True,
+                model_created=True,
+                solver_converged=False,
+                validation_passed=False,
+                solve_requested=True,
+                solve_status="failed",
+                failure_code="pyosis_solve_failed",
+                reason=f"{type(exc).__name__}: {exc}",
+                elapsed_s=round(time.monotonic() - started, 3),
+                solver_version=self.solver_version,
+                rebuild=False,
+            )
+        self._write_json(run_dir, "backend_status.json", status)
+        self._write_json(run_dir, "build_status.json", status)
+        return status
+
     def execute(
         self,
         candidate_project: Path,

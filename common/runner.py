@@ -130,9 +130,9 @@ class ExperimentRunner:
     def _parent_native_eval(architecture_id: str) -> bool:
         """T6 follows the parent train runner: no compile/layout hard gate.
 
-        ``osis-skill-enhance-main`` evaluates whatever is in ``py/``, then
-        optionally ``auto_solve``.  Missing files are scored, not used to skip
-        execution.  T1–T5 keep the comparison layout/compile pre-gates.
+        After the session goes idle, the parent solves the model already in
+        the OSIS process. It does not rebuild by running ``main.py``. T1–T5
+        keep the fresh-project build.
         """
 
         return architecture_id == "T6"
@@ -365,7 +365,14 @@ class ExperimentRunner:
             run_pyosis = self._parent_native_eval(architecture_id) or (
                 compile_result.get("passed") and layout.get("complete")
             )
-            if run_pyosis:
+            if run_pyosis and self._parent_native_eval(architecture_id):
+                backend_status = osis.solve_live(
+                    run_dir,
+                    solve=self.solve_gate,
+                    timeout_s=subtask_timeout_s.get("P4", self.timeout_s),
+                    deadline_monotonic=run_deadline_monotonic,
+                )
+            elif run_pyosis:
                 backend_status = osis.execute(
                     candidate_root,
                     run_dir,
@@ -373,6 +380,7 @@ class ExperimentRunner:
                     timeout_s=subtask_timeout_s.get("P4", self.timeout_s),
                     deadline_monotonic=run_deadline_monotonic,
                 )
+            if run_pyosis:
                 model_phase_end = time.monotonic()
                 if self.parent_repo is not None:
                     scorer = ModelConformanceCLIScorer(

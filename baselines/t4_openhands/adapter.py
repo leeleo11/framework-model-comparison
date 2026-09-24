@@ -1,6 +1,6 @@
 """T4 OpenHands SDK adapter (runs inside .venvs/t4).
 
-Verified against openhands_sdk 1.44.1 installed source: ``LLM``
+Verified against openhands_sdk 1.49.2 installed source: ``LLM``
 (sdk/llm/llm.py:220, pydantic fields ``max_output_tokens``/``timeout``/
 ``num_retries``; litellm model routing needs the ``openai/`` prefix),
 ``Agent`` (sdk/agent/agent.py:375; FinishTool+ThinkTool auto-included),
@@ -8,7 +8,7 @@ Verified against openhands_sdk 1.44.1 installed source: ``LLM``
 ``max_iteration_per_run``, blocking ``send_message``+``run()``
 (sdk/conversation/base.py:199/213), final text via
 ``openhands.sdk.conversation.get_agent_final_response``. Exec tools come from
-``openhands-tools`` 1.44.1 ``get_default_tools(enable_browser=False)``:
+``openhands-tools`` 1.49.5 ``get_default_tools(enable_browser=False)``:
 terminal, file editor, and task tracker. Skills stay on ``invoke_skill``.
 """
 

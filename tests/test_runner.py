@@ -319,6 +319,22 @@ class _RecordingPyOSIS:
         (run_dir / "backend_status.json").write_text(json.dumps(status), encoding="utf-8")
         return status
 
+    def solve_live(self, run_dir, **kwargs):
+        self.calls.append(("solve_live", run_dir, kwargs))
+        status = {
+            "execution_enabled": True,
+            "status": "succeeded",
+            "model_created": True,
+            "solver_converged": bool(kwargs.get("solve", False)),
+            "validation_passed": True,
+            "solve_requested": bool(kwargs.get("solve", False)),
+            "solve_status": "succeeded" if kwargs.get("solve") else "not_requested",
+            "failure_code": None,
+            "rebuild": False,
+        }
+        (run_dir / "backend_status.json").write_text(json.dumps(status), encoding="utf-8")
+        return status
+
 
 def _skills_and_task(tmp_path: Path, task_id: str):
     skills = tmp_path / "skills"
@@ -350,9 +366,10 @@ def test_runner_t6_executes_without_profile_like_parent_eval(tmp_path: Path):
     )
     summary = runner.run(task, architecture_id="T6", seed=0, candidate_project=candidate)
     backend = json.loads((summary.run_dir / "backend_status.json").read_text(encoding="utf-8"))
-    assert adapter.calls, "T6 must invoke PyOSIS even when 项目画像.md is absent"
+    assert adapter.calls[0][0] == "solve_live"
     assert backend["status"] == "succeeded"
     assert adapter.calls[0][2].get("solve") is True
+    assert backend["rebuild"] is False
 
 
 def test_runner_t6_executes_when_a_prep_module_is_missing(tmp_path: Path):
@@ -368,8 +385,9 @@ def test_runner_t6_executes_when_a_prep_module_is_missing(tmp_path: Path):
     )
     summary = runner.run(task, architecture_id="T6", seed=0, candidate_project=candidate)
     backend = json.loads((summary.run_dir / "backend_status.json").read_text(encoding="utf-8"))
-    assert adapter.calls, "parent eval has no 13-file gate; T6 must still execute"
+    assert adapter.calls[0][0] == "solve_live"
     assert backend["failure_code"] != "candidate_layout_incomplete"
+    assert backend["rebuild"] is False
 
 
 def test_runner_other_arch_skips_pyosis_when_a_prep_module_is_missing(tmp_path: Path):
