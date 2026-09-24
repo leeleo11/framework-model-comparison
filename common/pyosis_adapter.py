@@ -415,21 +415,64 @@ class PyOSISAdapter:
         if deadline_monotonic is not None:
             budget = min(budget, max(0.01, deadline_monotonic - started))
         wait_s = None if deadline_monotonic is None else max(0.0, deadline_monotonic - time.monotonic())
+        port = int(os.environ.get("OSIS_HTTP_PORT", "18080"))
+        script = (
+            "from pyosis.core.client import set_osis_port\n"
+            "from pyosis.core.engine import OSISEngine\n"
+            f"set_osis_port({port})\n"
+            f"OSISEngine().solve(timeout={budget!r})\n"
+        )
         try:
             with osis_runtime_lock(timeout_s=wait_s):
-                from pyosis.core.client import set_osis_port
-                from pyosis.core.engine import OSISEngine
-
-                set_osis_port(int(os.environ.get("OSIS_HTTP_PORT", "18080")))
-                OSISEngine().solve(timeout=budget)
+                completed = self._run(
+                    [self.python_executable, "-c", script],
+                    cwd=run_dir,
+                    timeout_s=budget,
+                )
+            self._write_text(run_dir, "solve_stdout.log", completed.stdout)
+            self._write_text(run_dir, "solve_stderr.log", completed.stderr)
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "solve failed").strip()
+                status = self._status(
+                    status="failed",
+                    execution_enabled=True,
+                    model_created=True,
+                    solver_converged=False,
+                    validation_passed=False,
+                    solve_requested=True,
+                    solve_status="failed",
+                    failure_code="pyosis_solve_failed",
+                    reason=detail[:2000],
+                    elapsed_s=round(time.monotonic() - started, 3),
+                    solver_version=self.solver_version,
+                    rebuild=False,
+                )
+            else:
+                status = self._status(
+                    status="succeeded",
+                    execution_enabled=True,
+                    model_created=True,
+                    solver_converged=True,
+                    validation_passed=True,
+                    solve_requested=True,
+                    solve_status="succeeded",
+                    elapsed_s=round(time.monotonic() - started, 3),
+                    solver_version=self.solver_version,
+                    rebuild=False,
+                )
+        except subprocess.TimeoutExpired as exc:
+            self._write_text(run_dir, "solve_stdout.log", exc.stdout)
+            self._write_text(run_dir, "solve_stderr.log", exc.stderr)
             status = self._status(
-                status="succeeded",
+                status="failed",
                 execution_enabled=True,
                 model_created=True,
-                solver_converged=True,
-                validation_passed=True,
+                solver_converged=False,
+                validation_passed=False,
                 solve_requested=True,
-                solve_status="succeeded",
+                solve_status="timeout",
+                failure_code="pyosis_solve_timeout",
+                reason=f"solve exceeded {budget:.0f}s",
                 elapsed_s=round(time.monotonic() - started, 3),
                 solver_version=self.solver_version,
                 rebuild=False,
