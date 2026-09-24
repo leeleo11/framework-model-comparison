@@ -53,9 +53,10 @@
 - `task_form`：`whole`（整桥生成）、`module`（单模块生成）或 `modify`（已有模型修改）；
 - `difficulty`：`L1`、`L2`、`L3`；
 - `natural_language_requirement`：给智能体的自然语言需求；
-- `total_timeout_s`、`subtask_timeout_s`：总任务和 P0–P6 分任务时限；正式基线总时限为
-  5400 秒（90 分钟），其中生成阶段最多 3600 秒（1 小时），预留 1800 秒给编译、
-  PyOSIS 和源码评分；
+- `total_timeout_s`、`subtask_timeout_s`：总任务和 P0–P6 分任务时限。正式对比的默认总时限是
+  7800 秒，生成阶段最多 6000 秒，预留 1800 秒给编译、PyOSIS 和源码评分
+  （`common/task_schema.py`）。上面的开发冒烟文件自己写了 5400 秒，只用于适配器调试，
+  不作为正式对比的时限；
 - `expected_fields`：用于任务约束和结果解释；
 - `metadata`：数据集划分、求解 gate 等实验标记。
 

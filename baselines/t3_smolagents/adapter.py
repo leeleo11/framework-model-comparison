@@ -4,8 +4,9 @@ Verified against smolagents 1.26.0 installed source: ``OpenAIServerModel``
 (models.py:1646/1797) takes ``client_kwargs={"timeout": ...}`` for the request
 timeout and forwards ``max_tokens`` into the request body; ``CodeAgent``
 (agents.py:1527) auto-registers ``final_answer``. The action is model-authored
-Python. ``pathlib`` is on the interpreter allow-list so the agent reads the
-mounted skills and writes the candidate project itself.
+Python. ``pathlib`` and ``pyosis`` are on the interpreter allow-list so the agent
+reads the mounted skills, writes the candidate project, and may run PyOSIS
+itself.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import sys
 import time
 from importlib import metadata
 from pathlib import Path
@@ -76,9 +78,34 @@ def normalize_code_agent_output(text: str) -> str:
         return text
     return "<code>\n" + "\n\n".join(actions) + "\n</code>"
 
-# CodeAgent's own action is Python.  pathlib is the interpreter's file API;
-# os, subprocess and shutil stay off the allow-list.
-ADDITIONAL_AUTHORIZED_IMPORTS = ["json", "pathlib"]
+# CodeAgent's own action is Python.  pathlib is the interpreter's file API.
+# pyosis is the same execution library the scorer uses; the interpreter may
+# import it.  os, subprocess and shutil stay off the allow-list.
+ADDITIONAL_AUTHORIZED_IMPORTS = ["json", "pathlib", "pyosis"]
+
+
+def _expose_parent_pyosis(parent_repo: Path | None) -> None:
+    """Let this interpreter import pyosis without the parent venv's packages.
+
+    The parent venv is Python 3.11. Putting its whole site-packages on this
+    3.13 path makes numpy/pydantic load the wrong binaries and hides openai.
+    Only the pure-Python ``pyosis`` package is linked in.
+    """
+
+    if parent_repo is None:
+        return
+    source = Path(parent_repo) / ".venv" / "Lib" / "site-packages" / "pyosis"
+    if not source.is_dir():
+        return
+    holder = Path(__file__).resolve().parents[2] / ".venvs" / "t3" / "pyosis-link"
+    link = holder / "pyosis"
+    holder.mkdir(parents=True, exist_ok=True)
+    if not link.exists():
+        import subprocess
+
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(source)], check=False)
+    if link.is_dir() and str(holder) not in sys.path:
+        sys.path.append(str(holder))
 
 
 def _package_version(name: str) -> str:
@@ -185,6 +212,8 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
 
     skills_dir = Path(request["skills_dir"])
     root = candidate_root(request)
+    parent = request.get("parent_repo")
+    _expose_parent_pyosis(Path(parent) if parent else None)
     model = _CodeActCompatibleOpenAIModel(
         model_id=request["model"],
         api_base=request["base_url"],

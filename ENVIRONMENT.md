@@ -158,7 +158,7 @@ $env:OSIS_MODEL_API_KEY = '<你的密钥>'
 ```powershell
 uv run python scripts\run_dataset.py `
   --architecture T2 --bridge osis-bridge-cantilever-box --form full `
-  --model deepseek-v4.1-flash-expires-on-0910 --reasoning-effort high
+  --model deepseek-flash --reasoning-effort low
 ```
 
 不传 `--reasoning-effort` 时不会向网关发送该字段，保持历史默认行为。显式选择后，T1–T5
@@ -255,7 +255,7 @@ uv run python scripts\run_dataset.py `
   --runs-dir runs\official\T2
 ```
 
-成批（推荐，自动处理 T6 独占与阶段闸门）：
+成批跑整桥时用 `--forms full`，并写上 `--model deepseek-flash --reasoning-effort low`。步骤见 `docs/框架使用说明.md`。下面的 `--auto-forms` 会接着跑 `gen` 和 `edit`，不是当前整桥对比：
 
 ```powershell
 $env:OSIS_MODEL_API_KEY = '<你的密钥>'

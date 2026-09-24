@@ -954,7 +954,7 @@ def main(argv: list[str] | None = None) -> int:
                     generation_deadline,
                     total_deadline,
                 ),
-                execution_feedback=True,
+                execution_feedback=False,
                 parent_repo=args.parent_repo,
             )
             meta_path = workspace / "t2_generation.json"
@@ -984,7 +984,7 @@ def main(argv: list[str] | None = None) -> int:
                         "subtask_timeout_s": task_spec.subtask_timeout_s,
                         "temperature": args.temperature,
                         "reasoning_effort": args.reasoning_effort,
-                        "execution_feedback": architecture != "T6",
+                        "execution_feedback": False,
                     },
                     ensure_ascii=False, indent=2,
                 ),

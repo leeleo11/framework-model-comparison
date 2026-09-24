@@ -15,7 +15,7 @@
 5. 调用父仓库 `src/evaluation` 进行正式评分；
 6. 写入运行清单、计时、评分和审计文件。
 
-比较的变量是各框架自己的编排，以及该框架官方接口上的动作方式。T2 由调用方把读技能和写候选工程的工具交给 LangGraph，不预载模板路径，也不接知识库。T3 用 smolagents 的 Python 解释器读写文件。T4 用 OpenHands 的终端和文件编辑器。T5 用 CrewAI 自己的技能挂载和协作工具；最终 `### FILE:` 块由适配器写入候选工程，写入前去掉 Markdown 代码围栏和块尾的 `---`。T6 用 OSIS 原生编排。任务、技能快照、PyOSIS、评分器和输出契约保持一致。
+比较的变量是各框架自己的编排，以及该框架官方接口上的动作方式。T2 由调用方把读技能和写候选工程的工具交给 LangGraph，不预载模板路径，不接知识库，也不另加运行工程的工具。T3 用 smolagents 的 Python 解释器读写文件，并可在同一次运行里导入 `pyosis`。T4 用 OpenHands 的终端和文件编辑器。T5 用 CrewAI 的技能挂载、委托和 `FileWriterTool` 在同一次 `kickoff` 里写候选工程；代码执行保持关闭。T6 用 OSIS 原生编排。技能快照相同。生成阶段不把 PyOSIS 做成每个框架都能调用的同一个工具。交卷后不再把报错送回。正式评分对最后一版做一次。
 
 怎么开跑、T1–T5 并行与 T6 串行、各框架怎么读技能和写候选，见 [`docs/框架使用说明.md`](docs/框架使用说明.md)。
 
@@ -138,7 +138,7 @@ uv run python scripts/run_dataset.py `
 | T2 | LangGraph / LangChain | `.venvs/main` |
 | T3 | smolagents CodeAct | `.venvs/t3` |
 | T4 | OpenHands 原生技能 + 终端/文件编辑器 | `.venvs/t4` |
-| T5 | CrewAI 技能挂载与协作；`### FILE:` 块落盘时去掉围栏 | `.venvs/t5` |
+| T5 | CrewAI 技能挂载、委托与 `FileWriterTool`；代码执行关闭 | `.venvs/t5` |
 | T6 | OSIS 原生路由 | 父仓库 `.venv` 和 OSIS 工具链 |
 
 任务形式有三种：
@@ -154,10 +154,12 @@ uv run python scripts/run_dataset.py `
 ```powershell
 uv run python scripts/run_dataset.py `
   --architecture T2 --bridge osis-bridge-cantilever-box --form full `
-  --model deepseek-v4.1-flash-expires-on-0910 --reasoning-effort high
+  --model deepseek-flash --reasoning-effort low
 ```
 
-`--reasoning-effort` 支持 `low`、`medium`、`high`；省略时不发送该字段，保持旧实验口径。
+`--reasoning-effort` 支持 `low`、`medium`、`high`；省略时不发送该字段。
+不写 `--model` 时，脚本默认仍是过期的 `deepseek-v4.1-flash-expires-on-0910`。
+当前正式对比必须显式传入 `deepseek-flash` 和 `low`。
 模型 ID、温度和思考强度都会写入每个 run 的 `frozen_config.json`。
 
 正式运行默认开启求解并要求收敛。诊断时可以使用：
@@ -188,24 +190,17 @@ uv run python scripts/run_dataset.py `
 
 `evaluation.json` 的正式分数来自父仓库评价器。`runtime_score.json` 是可审计的运行态旁路结果，不替换正式评分。
 
-## 批量阶段运行
+## 批量运行
 
-三阶段调度器会按 `full → gen → edit` 执行，并支持断点恢复：
-
-```powershell
-uv run python scripts/run_campaign.py --label formal-run --auto-forms --resume
-```
-
-批量运行也可统一指定模型和强度：
+当前正式对比只跑整桥。运行步骤、六个架构的工具和 T6 的串行约束见 [`docs/框架使用说明.md`](docs/框架使用说明.md)。
 
 ```powershell
 uv run python scripts/run_campaign.py `
-  --label high-effort-run --auto-forms --resume `
-  --model deepseek-v4.1-flash-expires-on-0910 `
-  --reasoning-effort high
+  --label formal-full --forms full --resume `
+  --model deepseek-flash --reasoning-effort low
 ```
 
-只有上一阶段同时生成 `evaluation.json` 和 `manifest.json` 的任务，才会进入下一阶段。已有终态结果会跳过，中断任务可以重跑。
+`--auto-forms` 会按 `full → gen → edit` 继续，前一阶段没有全部终态就拒绝进入下一阶段。那是另一组任务，不要和当前整桥对比混在同一个 label 里。已有 `evaluation.json` 和 `manifest.json` 的格子会被 `--resume` 跳过。
 
 ## 后处理和表格
 

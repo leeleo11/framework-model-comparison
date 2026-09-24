@@ -174,7 +174,7 @@ def test_t3_uses_the_code_agent_interpreter_for_files():
     from baselines.t3_smolagents import adapter
 
     source = Path(adapter.__file__).read_text(encoding="utf-8")
-    assert adapter.ADDITIONAL_AUTHORIZED_IMPORTS == ["json", "pathlib"]
+    assert adapter.ADDITIONAL_AUTHORIZED_IMPORTS == ["json", "pathlib", "pyosis"]
     assert "os" not in adapter.ADDITIONAL_AUTHORIZED_IMPORTS
     assert "tools=[]" in source
     assert not hasattr(adapter, "write_file")
