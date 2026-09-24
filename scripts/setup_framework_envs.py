@@ -16,7 +16,7 @@ Framework pins come from ``common/adapters.py`` (single source of truth):
     T2  langgraph==1.2.11 / langchain==1.3.18   (system python, already installed)
     T3  smolagents==1.26.0
     T4  openhands-sdk==1.44.1
-    T5  crewai==1.15.18
+    T5  crewai==1.15.18 / crewai-tools==1.15.18
     T6  OSIS-AI native       (no pip framework; parent-repo tooling)
 
 Usage::
@@ -68,7 +68,7 @@ FRAMEWORKS: dict[str, FrameworkEnv] = {
     ),
     "t3": FrameworkEnv("t3", ("smolagents==1.26.0", "openai"), "smolagents"),
     "t4": FrameworkEnv("t4", ("openhands-sdk==1.44.1",), "openhands"),
-    "t5": FrameworkEnv("t5", ("crewai==1.15.18",), "crewai"),
+    "t5": FrameworkEnv("t5", ("crewai==1.15.18", "crewai-tools==1.15.18"), "crewai"),
 }
 
 

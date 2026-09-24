@@ -108,6 +108,8 @@ def test_t5_mounts_skills_and_uses_crewai_delegation(tmp_path: Path):
 
     source = Path(adapter.__file__).read_text(encoding="utf-8")
     assert "skills=[skills_dir]" in source
+    assert "FileWriterTool" in source
+    assert "base_dir=str(root)" in source
     assert "Delegate work to coworker" in source
     assert "Ask question to coworker" in source
     assert not hasattr(adapter, "build_role_tools")

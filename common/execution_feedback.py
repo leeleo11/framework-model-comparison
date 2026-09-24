@@ -8,7 +8,6 @@ the outer runner, which still runs once on the final candidate.
 from __future__ import annotations
 
 import hashlib
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -130,32 +129,24 @@ def run_feedback_loop(
 
     rounds: list[dict[str, Any]] = []
     previous: str | None = None
-    try:
-        while True:
-            if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
-                return {"stop_reason": "task_timeout", "rounds": rounds}
-            digest = source_digest(candidate)
-            scratch = scratch_root / f"{len(rounds):03d}"
-            observation = observe(scratch)
-            rounds.append(
-                {
-                    "source_digest": digest,
-                    "ok": observation is None,
-                    "observation": None if observation is None else observation[:2000],
-                }
-            )
-            # The error text is already on the round record. Drop the OSIS
-            # scratch immediately so a long repair loop cannot fill the disk.
-            if scratch.exists():
-                shutil.rmtree(scratch, ignore_errors=True)
-            if observation is None:
-                return {"stop_reason": "completed", "rounds": rounds}
-            if previous is not None and previous == digest:
-                return {"stop_reason": "unchanged", "rounds": rounds}
-            previous = digest
-            if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
-                return {"stop_reason": "task_timeout", "rounds": rounds}
-            resume(observation)
-    finally:
-        if scratch_root.exists():
-            shutil.rmtree(scratch_root, ignore_errors=True)
+    while True:
+        if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
+            return {"stop_reason": "task_timeout", "rounds": rounds}
+        digest = source_digest(candidate)
+        scratch = scratch_root / f"{len(rounds):03d}"
+        observation = observe(scratch)
+        rounds.append(
+            {
+                "source_digest": digest,
+                "ok": observation is None,
+                "observation": None if observation is None else observation[:2000],
+            }
+        )
+        if observation is None:
+            return {"stop_reason": "completed", "rounds": rounds}
+        if previous is not None and previous == digest:
+            return {"stop_reason": "unchanged", "rounds": rounds}
+        previous = digest
+        if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
+            return {"stop_reason": "task_timeout", "rounds": rounds}
+        resume(observation)

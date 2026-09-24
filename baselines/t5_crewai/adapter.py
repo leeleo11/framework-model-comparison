@@ -143,9 +143,33 @@ def read_skill_resource(skills_dir: Path, skill_name: str, relative_path: str = 
     return target.read_text(encoding="utf-8", errors="replace")
 
 
-def _canonical_markers() -> str:
+def _canonical_paths() -> str:
     paths = ["py/项目画像.md", *[f"py/prep/{name}" for name in CANONICAL_PROJECT_FILES[1:]]]
-    return "\n".join(f"### FILE: {path}" for path in paths)
+    return "\n".join(paths)
+
+
+def _candidate_file_tools(root: Path, *, write: bool) -> list[Any]:
+    """CrewAI's own file tools, confined to the candidate project."""
+
+    from crewai_tools import DirectoryReadTool, FileReadTool, FileWriterTool
+
+    tools: list[Any] = [
+        DirectoryReadTool(directory=str(root)),
+        FileReadTool(base_dir=str(root)),
+    ]
+    if write:
+        tools.append(FileWriterTool(base_dir=str(root)))
+    return tools
+
+
+def _files_on_disk(root: Path) -> list[str]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    )
 
 
 def _unwrap_file_body(content: str) -> str:
@@ -222,6 +246,8 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     # load_skill returns SKILL.md only. read_skill_resource is the missing
     # resource step: list names, then read one file. CrewAI's default max_iter
     # is 25; override it so a role is not cut off before the wall clock.
+    read_tools = _candidate_file_tools(root, write=False)
+    write_tools = _candidate_file_tools(root, write=True)
     researcher = Agent(
         role="Bridge case researcher",
         goal="Load the relevant mounted skills and produce a written design brief.",
@@ -231,21 +257,21 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     )
     engineer = Agent(
         role="OSIS bridge model engineer",
-        goal="Write every canonical candidate-project file as FILE blocks, then repair the reviewer's fix list.",
-        backstory="Precise bridge-engineering coder producing the 13 canonical files from loaded skills.",
-        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=resource_tools,
+        goal="Write every canonical candidate-project file with the file writer, then repair the reviewer's fix list.",
+        backstory="Precise bridge-engineering coder. Writes the candidate project with CrewAI file tools.",
+        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=[*resource_tools, *write_tools],
         **AGENT_POLICY, verbose=False,
     )
     reviewer = Agent(
         role="Candidate reviewer",
-        goal="Check the engineer's FILE blocks against the mounted skills and return a concrete fix list.",
-        backstory="Rigorous QA agent. Names defects and may ask the engineer through the crew's delegation tool.",
-        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=resource_tools,
+        goal="Read the candidate files and return a concrete fix list.",
+        backstory="Rigorous QA agent. Reads files with CrewAI file tools and does not write them.",
+        llm=llm, max_iter=LIBRARY_LOOP_BOUND, tools=[*resource_tools, *read_tools],
         **AGENT_POLICY, verbose=False,
     )
 
     task_json = json.dumps(request["task"], ensure_ascii=False, indent=2)
-    markers = _canonical_markers()
+    paths = _canonical_paths()
     research_task = Task(
         description=(
             "Use the crew's load_skill tool to read the relevant mounted "
@@ -263,26 +289,27 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     engineering_task = Task(
         description=(
             "From the research brief and the mounted skills, write the "
-            "complete candidate project. Read a template with "
-            "read_skill_resource before writing a file that has one. "
-            "Output exactly one block for each "
-            "canonical file, in this order. Every block starts with its "
-            "marker line and contains the complete file. Put nothing else "
-            "outside the blocks.\n\n" + markers + "\n\nTask:\n" + task_json
+            "complete candidate project with the File Writer Tool. The tool "
+            "is confined to the candidate project. Pass each path as the "
+            "filename, for example py/prep/main.py. Read a template with "
+            "read_skill_resource before writing a file that has one. Read a "
+            "file back with the file reader before replacing it. Write every "
+            "path below. Do not put the file bodies in the final message.\n\n"
+            + paths + "\n\nTask:\n" + task_json
         ),
-        expected_output="The complete candidate project as one FILE block per canonical file.",
+        expected_output="Every canonical file written into the candidate project.",
         agent=engineer, context=[research_task],
     )
     review_task = Task(
         description=(
-            "Review the engineer's FILE blocks against the mounted skills. "
-            "Do not rewrite the files. Report every missing canonical file "
-            "and every concrete defect: empty or placeholder arguments, API "
-            "calls that do not match the skill, and files that are not "
-            "executable PYOSIS. If the candidate is acceptable, say that no "
-            "change is required. Use \"Delegate work to coworker\" or "
-            "\"Ask question to coworker\" when the engineer should repair or "
-            "clarify a specific defect."
+            "Read the candidate files with the file reader and directory "
+            "listing tools. Do not write files. Report every missing "
+            "canonical file and every concrete defect: empty or placeholder "
+            "arguments, API calls that do not match the skill, and files "
+            "that are not executable PYOSIS. If the candidate is acceptable, "
+            "say that no change is required. Use \"Delegate work to "
+            "coworker\" or \"Ask question to coworker\" when the engineer "
+            "should repair or clarify a specific defect."
         ),
         expected_output=(
             "A fix list naming each missing file or concrete defect, or an "
@@ -292,12 +319,12 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
     )
     revise_task = Task(
         description=(
-            "Apply the reviewer's fix list. Output the complete candidate "
-            "again, exactly one FILE block per canonical file, in this order. "
-            "If the reviewer stated that no change is required, repeat the "
-            "engineer's blocks unchanged.\n\n" + markers
+            "Apply the reviewer's fix list by editing the candidate files "
+            "with the file reader and the File Writer Tool. Change only the "
+            "files that need a fix. If the reviewer stated that no change is "
+            "required, leave the files as they are.\n\n" + paths
         ),
-        expected_output="The final candidate project as one FILE block per canonical file.",
+        expected_output="The candidate project files updated on disk.",
         agent=engineer, context=[engineering_task, review_task],
     )
 
@@ -321,11 +348,12 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
             tool.name
             for tool in crew._prepare_tools(researcher, research_task, [])
         ],
+        "file_tools": [tool.name for tool in engineer.tools if tool.name != "read_skill_resource"],
     }
     try:
         result = crew.kickoff()
         raw = str(getattr(result, "raw", ""))
-        written = _materialize_file_blocks(raw, root)
+        written = _files_on_disk(root)
         meta.update(_crew_metrics(agents))
         meta["status"] = "completed"
         meta["files_written"] = written
@@ -348,19 +376,22 @@ def run_generation(request: dict[str, Any]) -> dict[str, Any]:
 
             def _resume(observation: str) -> None:
                 revision = Task(
-                    description=observation + "\n\n" + markers,
-                    expected_output="The candidate project as one FILE block per canonical file.",
+                    description=(
+                        observation + "\n\nEdit the existing candidate files "
+                        "with the file reader and the File Writer Tool. "
+                        "Change the files that caused this error.\n\n" + paths
+                    ),
+                    expected_output="The candidate project files updated on disk.",
                     agent=engineer,
                 )
-                revised = Crew(
+                Crew(
                     agents=[engineer],
                     tasks=[revision],
                     process=Process.sequential,
                     verbose=False,
                     skills=[skills_dir],
                 ).kickoff()
-                rewritten = _materialize_file_blocks(str(getattr(revised, "raw", "")), root)
-                meta["files_written"] = rewritten
+                meta["files_written"] = _files_on_disk(root)
                 meta.update(_crew_metrics(agents))
 
             feedback = run_feedback_loop(

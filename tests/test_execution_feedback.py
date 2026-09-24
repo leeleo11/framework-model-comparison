@@ -63,8 +63,6 @@ def test_feedback_loop_stops_when_the_resubmit_is_unchanged(tmp_path: Path):
     resumes = []
 
     def observe(scratch: Path) -> str:
-        scratch.mkdir(parents=True, exist_ok=True)
-        (scratch / "build_stderr.log").write_text("still broken\n", encoding="utf-8")
         return "compile failed\npy/prep/main.py: SyntaxError: still broken"
 
     def resume(observation: str) -> None:
@@ -80,7 +78,6 @@ def test_feedback_loop_stops_when_the_resubmit_is_unchanged(tmp_path: Path):
     assert result["stop_reason"] == "unchanged"
     assert len(resumes) == 1
     assert resumes[0].startswith("compile failed")
-    assert not (tmp_path / "rounds").exists()
 
 
 def test_feedback_loop_stops_after_the_build_succeeds(tmp_path: Path):

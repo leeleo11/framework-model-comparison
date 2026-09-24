@@ -184,27 +184,6 @@ def slim_run_dir(run_dir: Path) -> dict[str, float]:
     return removed
 
 
-def sweep_finished_feedback(runs_dir: Path) -> int:
-    """Delete intermediate feedback scratch for every cell that has already been scored.
-
-    A campaign process started before this cleanup existed will not slim its
-    own cell. The next process sweeps those leftovers. A cell still generating
-    has no evaluation yet, so its scratch is left in place.
-    """
-
-    removed = 0
-    if not runs_dir.is_dir():
-        return removed
-    for path in runs_dir.rglob("build_feedback"):
-        if path.parent.name != "generated" or not path.is_dir():
-            continue
-        cell = path.parent.parent
-        if (cell / "evaluation.json").is_file() and (cell / "manifest.json").is_file():
-            shutil.rmtree(path, ignore_errors=True)
-            removed += 1
-    return removed
-
-
 def export_xlsx(runs_dir: Path, output: Path) -> str | None:
     script = PROJECT_ROOT / "scripts" / "export_results_xlsx.py"
     if not script.is_file():
@@ -254,7 +233,6 @@ def main(argv: list[str] | None = None) -> int:
 
     runs_dir = PROJECT_ROOT / "runs" / args.label
     runs_dir.mkdir(parents=True, exist_ok=True)
-    sweep_finished_feedback(runs_dir)
     stale_archive = args.archive_root / f"{args.label}-stale-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     source_cache: dict[tuple[str, str, int], str] = {}
 
